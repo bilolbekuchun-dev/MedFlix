@@ -1,36 +1,43 @@
-# [Project name]
+# Telegram Kino Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Telegram bot that stores movie codes in SQLite and copies the matching movie post from a Telegram channel to the user.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/api-server run dev` — run the API server and Telegram long-polling bot
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- Required secret: `TELEGRAM_BOT_TOKEN` — token from BotFather
+- Optional env: `TELEGRAM_ADMIN_IDS` — comma-separated Telegram user IDs allowed to use admin commands
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
 - API: Express 5
-- DB: PostgreSQL + Drizzle ORM
+- DB: SQLite via Node's built-in `node:sqlite` module (`data/kino-bot.sqlite`)
 - Validation: Zod (`zod/v4`), `drizzle-zod`
 - API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS bundle)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/api-server/src/bot/telegram.ts` — Telegram API client, polling loop, commands and movie lookup
+- `artifacts/api-server/src/bot/database.ts` — SQLite schema and movie/settings persistence
+- `data/kino-bot.sqlite` — runtime database file, created automatically
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The bot uses Telegram long polling so it works without a public webhook URL.
+- Movie delivery uses `copyMessage`, so the bot does not download or duplicate video files.
+- Telegram update offsets are persisted in SQLite to avoid replaying old messages after restart.
+- Admin access is controlled with `TELEGRAM_ADMIN_IDS`; regular users can only request movies by code.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Users send a movie code and receive the matching post from the source channel.
+- Admins can add or update movies with `/add`, remove them with `/delete`, and inspect the catalog with `/list`.
 
 ## User preferences
 

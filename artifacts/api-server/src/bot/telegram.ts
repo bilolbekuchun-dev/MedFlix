@@ -1,4 +1,11 @@
-import { findMovie, getSetting, listMovies, setSetting, deleteMovie, upsertMovie } from "./database";
+import {
+  deleteMovie,
+  findMovie,
+  getSetting,
+  listMovies,
+  setSetting,
+  upsertMovie,
+} from "./database";
 import { logger } from "../lib/logger";
 
 type TelegramResponse<T> = {
@@ -15,6 +22,14 @@ type TelegramUser = {
 
 type TelegramChat = {
   id: number;
+  title?: string;
+  username?: string;
+};
+
+type TelegramForwardOrigin = {
+  type?: string;
+  chat?: TelegramChat;
+  message_id?: number;
 };
 
 type TelegramMessage = {
@@ -22,6 +37,11 @@ type TelegramMessage = {
   chat: TelegramChat;
   from?: TelegramUser;
   text?: string;
+  caption?: string;
+  forward_origin?: TelegramForwardOrigin;
+  forward_from_chat?: TelegramChat;
+  forward_from_message_id?: number;
+  reply_to_message?: TelegramMessage;
 };
 
 type TelegramUpdate = {
@@ -36,6 +56,10 @@ const adminIds = new Set(
     .map((id) => id.trim())
     .filter(Boolean),
 );
+const pendingForwardedPosts = new Map<
+  string,
+  { channelChatId: string; channelMessageId: number }
+>();
 
 function apiUrl(method: string): string {
   return `https://api.telegram.org/bot${token}/${method}`;
@@ -91,10 +115,67 @@ function formatMovieList(): string {
   ].join("\n");
 }
 
+function getForwardedChannelPost(
+  message: TelegramMessage,
+): { channelChatId: string; channelMessageId: number } | null {
+  const origin = message.forward_origin;
+  const originMessageId = origin?.message_id;
+  if (
+    origin?.type === "channel" &&
+    origin.chat?.id !== undefined &&
+    typeof originMessageId === "number" &&
+    Number.isInteger(originMessageId) &&
+    originMessageId > 0
+  ) {
+    return {
+      channelChatId: String(origin.chat.id),
+      channelMessageId: originMessageId,
+    };
+  }
+
+  const legacyMessageId = message.forward_from_message_id;
+  if (
+    message.forward_from_chat?.id !== undefined &&
+    typeof legacyMessageId === "number" &&
+    Number.isInteger(legacyMessageId) &&
+    legacyMessageId > 0
+  ) {
+    return {
+      channelChatId: String(message.forward_from_chat.id),
+      channelMessageId: legacyMessageId,
+    };
+  }
+
+  return null;
+}
+
 async function handleMessage(message: TelegramMessage): Promise<void> {
   const chatId = message.chat.id;
   const userId = message.from?.id;
-  const text = message.text?.trim();
+  const text = (message.text ?? message.caption)?.trim() ?? "";
+
+  if (!userId) {
+    return;
+  }
+
+  const forwardedPost = getForwardedChannelPost(message);
+  if (forwardedPost && isAdmin(userId) && !text.startsWith("/")) {
+    pendingForwardedPosts.set(String(userId), forwardedPost);
+    await sendText(
+      chatId,
+      [
+        "Kanal posti qabul qilindi.",
+        `Kanal ID: ${forwardedPost.channelChatId}`,
+        `Post ID: ${forwardedPost.channelMessageId}`,
+        "",
+        "Endi shu chatga quyidagicha yuboring:",
+        "/add KOD | Kino nomi",
+        "",
+        "Masalan: /add 101 | Interstellar",
+      ].join("\n"),
+    );
+    return;
+  }
 
   if (!text) {
     return;
@@ -118,6 +199,10 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
             ? [
                 "",
                 "Admin buyruqlari:",
+                "1) Kanal postini shu botga forward qiling",
+                "2) /add KOD | Nomi",
+                "",
+                "Eski format ham ishlaydi:",
                 "/add KOD | Nomi | Kanal ID | Post ID",
                 "/delete KOD",
                 "/list",
@@ -170,24 +255,31 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         .map((value) => value.trim());
       const code = normalizeCode(rawCode ?? "");
       const title = rawTitle ?? "";
-      const channelChatId = rawChatId ?? "";
-      const channelMessageId = Number(rawMessageId);
+      const referencedForward =
+        getForwardedChannelPost(message.reply_to_message ?? message) ??
+        pendingForwardedPosts.get(String(userId));
+      const channelChatId = rawChatId || referencedForward?.channelChatId || "";
+      const channelMessageId =
+        Number(rawMessageId) || referencedForward?.channelMessageId || 0;
 
       if (
         !code ||
         !title ||
         !channelChatId ||
         !Number.isInteger(channelMessageId) ||
-        channelMessageId <= 0
+        channelMessageId <= 0 ||
+        (rawChatId && !rawMessageId)
       ) {
         await sendText(
           chatId,
           [
             "Format noto‘g‘ri.",
-            "Misol:",
-            "/add 101 | Interstellar | -1001234567890 | 42",
+            "Tavsiya etilgan usul:",
+            "1. Kanal postini botga forward qiling.",
+            "2. /add 101 | Interstellar",
             "",
-            "Kanal ID va post ID kanal postining manzili yoki Telegram admin logidan olinadi.",
+            "Eski usul:",
+            "/add 101 | Interstellar | -1001234567890 | 42",
           ].join("\n"),
         );
         return;
@@ -199,6 +291,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         channelChatId,
         channelMessageId,
       });
+      pendingForwardedPosts.delete(String(userId));
       await sendText(chatId, `${movie.code} — ${movie.title} bazaga saqlandi.`);
       return;
     }
@@ -220,10 +313,36 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       message_id: movie.channelMessageId,
     });
   } catch (err: unknown) {
-    logger.error({ err, code: movie.code }, "Failed to copy movie message");
+    const errorText = err instanceof Error ? err.message : String(err);
+    logger.error(
+      {
+        err,
+        code: movie.code,
+        channelChatId: movie.channelChatId,
+        channelMessageId: movie.channelMessageId,
+      },
+      "Failed to copy movie message",
+    );
+
+    let userMessage =
+      "Kino topildi, lekin kanal postini yuborib bo‘lmadi. Bot manba kanalga qo‘shilganini tekshiring.";
+    if (errorText.includes("message to copy not found")) {
+      userMessage =
+        "Kino kodi bazada bor, lekin kanal postining ID raqami topilmadi. Postni botga forward qilib, qaytadan /add qiling.";
+    } else if (errorText.includes("chat not found")) {
+      userMessage =
+        "Kanal topilmadi. Forward orqali qaytadan /add qiling yoki kanal ID sini tekshiring.";
+    } else if (
+      errorText.includes("not enough rights") ||
+      errorText.includes("bot is not a member")
+    ) {
+      userMessage =
+        "Bot manba kanalga qo‘shilmagan yoki yetarli huquqqa ega emas. Botni kanalga admin qilib qo‘shing.";
+    }
+
     await sendText(
       chatId,
-      "Kino topildi, lekin kanal postini yuborib bo‘lmadi. Kanal ID va botning kanalga qo‘shilganini tekshiring.",
+      userMessage,
     );
   }
 }

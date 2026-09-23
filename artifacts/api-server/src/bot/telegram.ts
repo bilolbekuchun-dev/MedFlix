@@ -50,12 +50,6 @@ type TelegramUpdate = {
 };
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
-const adminIds = new Set(
-  (process.env.TELEGRAM_ADMIN_IDS ?? "")
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean),
-);
 const pendingForwardedPosts = new Map<
   string,
   { channelChatId: string; channelMessageId: number }
@@ -88,7 +82,12 @@ async function sendText(chatId: number, text: string): Promise<void> {
 }
 
 function isAdmin(userId: number): boolean {
-  return adminIds.has(String(userId));
+  return new Set(
+    (process.env.TELEGRAM_ADMIN_IDS ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean),
+  ).has(String(userId));
 }
 
 function normalizeCode(value: string): string {
@@ -214,7 +213,13 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     }
 
     if (command === "/id") {
-      await sendText(chatId, `Sizning Telegram ID raqamingiz: ${userId ?? "noma’lum"}`);
+      await sendText(
+        chatId,
+        [
+          `Sizning Telegram ID raqamingiz: ${userId}`,
+          `Admin holati: ${isAdmin(userId) ? "tasdiqlangan" : "tasdiqlanmagan"}`,
+        ].join("\n"),
+      );
       return;
     }
 

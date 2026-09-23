@@ -82,12 +82,46 @@ async function sendText(chatId: number, text: string): Promise<void> {
 }
 
 function isAdmin(userId: number): boolean {
-  return new Set(
-    (process.env.TELEGRAM_ADMIN_IDS ?? "")
-      .split(",")
-      .map((id) => id.trim())
-      .filter(Boolean),
-  ).has(String(userId));
+  return new Set(getAdminIds()).has(String(userId));
+}
+
+function getAdminIds(): string[] {
+  return (process.env.TELEGRAM_ADMIN_IDS ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
+
+async function configureBotCommands(): Promise<void> {
+  await telegramApi("setMyCommands", {
+    commands: [
+      { command: "start", description: "Botni boshlash" },
+    ],
+  });
+
+  const adminCommands = [
+    { command: "start", description: "Botni boshlash" },
+    { command: "add", description: "Kanal postidan kino qo‘shish" },
+    { command: "delete", description: "Kino kodini o‘chirish" },
+    { command: "list", description: "Kinolar ro‘yxati" },
+  ];
+
+  for (const adminId of getAdminIds()) {
+    const chatId = Number(adminId);
+    if (!Number.isSafeInteger(chatId)) {
+      logger.warn({ adminId }, "Skipping invalid Telegram admin ID");
+      continue;
+    }
+
+    try {
+      await telegramApi("setMyCommands", {
+        commands: adminCommands,
+        scope: { type: "chat", chat_id: chatId },
+      });
+    } catch (err: unknown) {
+      logger.error({ err, adminId }, "Failed to configure admin commands");
+    }
+  }
 }
 
 function normalizeCode(value: string): string {
@@ -382,6 +416,7 @@ export async function startTelegramBot(): Promise<void> {
 
   await telegramApi("deleteWebhook", { drop_pending_updates: false });
   const bot = await telegramApi<{ username?: string }>("getMe", {});
+  await configureBotCommands();
   logger.info({ username: bot.username }, "Telegram bot connected");
   void poll();
 }

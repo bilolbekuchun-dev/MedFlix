@@ -25,4 +25,4 @@ channel = "stable-25_05"
 [userenv]
 
 [userenv.shared]
-TELEGRAM_ADMIN_IDS = "1639240649"
+TELEGRAM_ADMIN_IDS = "1733531423"

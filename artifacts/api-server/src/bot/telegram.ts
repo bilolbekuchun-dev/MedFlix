@@ -184,30 +184,27 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     const { command, args } = commandParts(text);
 
     if (command === "/start" || command === "/help") {
+      const welcomeLines = [
+        "Kino botga xush kelibsiz.",
+        "",
+        "Kino ko‘rish uchun kino kodini yuboring.",
+        "Masalan: 101",
+      ];
+
+      if (isAdmin(userId)) {
+        welcomeLines.push(
+          "",
+          "Admin bo‘limi:",
+          "1) Kanal postini botga forward qiling",
+          "2) /add KOD | Kino nomi",
+          "/delete KOD",
+          "/list",
+        );
+      }
+
       await sendText(
         chatId,
-        [
-          "Kino botga xush kelibsiz.",
-          "",
-          "Kino kodini yuboring — bot kanal postidagi videoni shu yerga yuboradi.",
-          "",
-          "Buyruqlar:",
-          "/id — Telegram ID raqamingizni ko‘rsatish",
-          "/help — yordam",
-          ...(userId && isAdmin(userId)
-            ? [
-                "",
-                "Admin buyruqlari:",
-                "1) Kanal postini shu botga forward qiling",
-                "2) /add KOD | Nomi",
-                "",
-                "Eski format ham ishlaydi:",
-                "/add KOD | Nomi | Kanal ID | Post ID",
-                "/delete KOD",
-                "/list",
-              ]
-            : []),
-        ].join("\n"),
+        welcomeLines.join("\n"),
       );
       return;
     }

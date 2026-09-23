@@ -5,6 +5,9 @@ dist
 tmp
 out-tsc
 *.tsbuildinfo
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
 .expo
 .expo-shared
 

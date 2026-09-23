@@ -1,0 +1,1 @@
+- [Telegram bot runtime](telegram-bot-runtime.md) — long polling with Node’s built-in SQLite and Telegram copyMessage delivery

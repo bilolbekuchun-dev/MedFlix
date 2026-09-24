@@ -232,6 +232,18 @@ function getStructurePostReference(): TelegramPostReference {
   return defaultStructurePost;
 }
 
+function formatTelegramPostLink(reference: TelegramPostReference): string {
+  if (reference.chatId.startsWith("@")) {
+    return `https://t.me/${reference.chatId.slice(1)}/${reference.messageId}`;
+  }
+
+  if (reference.chatId.startsWith("-100")) {
+    return `https://t.me/c/${reference.chatId.slice(4)}/${reference.messageId}`;
+  }
+
+  return `${reference.chatId}/${reference.messageId}`;
+}
+
 function formatStructurePost(): string {
   const movies = listMovies();
   const genres = listGenres();
@@ -917,11 +929,13 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     if (command === "/setstructure") {
       const reference = parseTelegramPostLink(args);
       if (!reference) {
+        const currentReference = getStructurePostReference();
         await sendText(
           chatId,
           [
             "Format: /setstructure POST_LINK",
-            "Masalan: /setstructure https://t.me/MF_Base/6",
+            `Joriy struktura posti: ${formatTelegramPostLink(currentReference)}`,
+            "Masalan: /setstructure https://t.me/MF_Base/17",
             "",
             "Bot target kanalda postlarni tahrirlash huquqiga ega bo‘lishi kerak.",
           ].join("\n"),

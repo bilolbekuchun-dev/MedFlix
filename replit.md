@@ -14,6 +14,7 @@ Telegram bot that stores movie codes in SQLite and copies the matching movie pos
 - Optional env: `TELEGRAM_REQUIRED_CHANNEL_IDS` and `TELEGRAM_REQUIRED_CHAT_IDS` — comma-separated channel/chat IDs for subscription checks
 - Optional env: `TELEGRAM_REQUIRED_CHANNEL_URLS` and `TELEGRAM_REQUIRED_CHAT_URLS` — matching comma-separated invite/public links for the subscription buttons
 - Optional env: `TELEGRAM_DISCUSSION_URL` — discussion link shown below delivered movies
+- Structure post: `https://t.me/MF_Base/6` is the default live system-information post; admins can change it with `/setstructure POST_LINK`
 
 ## Stack
 
@@ -37,6 +38,7 @@ Telegram bot that stores movie codes in SQLite and copies the matching movie pos
 - Telegram update offsets are persisted in SQLite to avoid replaying old messages after restart.
 - Admin access is controlled with `TELEGRAM_ADMIN_IDS`; regular users can search by code or title after the optional subscription gate.
 - Subscription checks use Telegram `getChatMember`; administrators bypass the gate.
+- The structure post is refreshed on startup and after catalog or bot-configuration changes. The bot must have permission to edit messages in that channel.
 
 ## Product
 

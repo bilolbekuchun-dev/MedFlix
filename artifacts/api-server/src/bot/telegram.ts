@@ -173,11 +173,148 @@ function getDiscussionUrl(): string | undefined {
   return value || undefined;
 }
 
+type TelegramPostReference = {
+  chatId: string;
+  messageId: number;
+};
+
+const defaultStructurePost: TelegramPostReference = {
+  chatId: "@MF_Base",
+  messageId: 6,
+};
+
+function parseTelegramPostLink(value: string): TelegramPostReference | null {
+  try {
+    const url = new URL(value.trim());
+    if (url.hostname !== "t.me" && url.hostname !== "telegram.me") {
+      return null;
+    }
+
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) {
+      return null;
+    }
+
+    const messageId = Number(parts.at(-1));
+    if (!Number.isInteger(messageId) || messageId <= 0) {
+      return null;
+    }
+
+    if (parts[0] === "c" && parts.length >= 3) {
+      const internalChatId = parts[1];
+      if (!/^\d+$/.test(internalChatId)) {
+        return null;
+      }
+      return {
+        chatId: `-100${internalChatId}`,
+        messageId,
+      };
+    }
+
+    if (!/^[A-Za-z0-9_]+$/.test(parts[0])) {
+      return null;
+    }
+
+    return { chatId: `@${parts[0]}`, messageId };
+  } catch {
+    return null;
+  }
+}
+
+function getStructurePostReference(): TelegramPostReference {
+  const chatId = getSetting("structure_post_chat_id");
+  const messageId = Number(getSetting("structure_post_message_id"));
+
+  if (chatId && Number.isInteger(messageId) && messageId > 0) {
+    return { chatId, messageId };
+  }
+
+  return defaultStructurePost;
+}
+
+function formatStructurePost(): string {
+  const movies = listMovies();
+  const genres = listGenres();
+  const startVideoConfigured = Boolean(
+    getSetting("start_channel_chat_id") &&
+      getSetting("start_channel_message_id"),
+  );
+  const requiredSubscriptions = getRequiredSubscriptions();
+  const recentMovies = movies
+    .slice(0, 12)
+    .map((movie) => `• ${movie.code} — ${movie.title}`)
+    .join("\n");
+
+  return [
+    "🩺 MEDFLIX BOT — TIZIM MA’LUMOTI",
+    "",
+    "📦 DATABASE",
+    `• SQLite: ${movies.length} ta kino/material`,
+    `• Janrlar: ${genres.length} ta`,
+    "",
+    "📚 SO‘NGGI KODLAR",
+    recentMovies || "• Hali kino qo‘shilmagan",
+    "",
+    "🔌 API VA ISHLASH STRUKTURASI",
+    "• Telegram Bot API + long polling",
+    "• Kino yetkazish: copyMessage",
+    "• Qidiruv: kod va nom bo‘yicha",
+    "• Katalog: janrlar va inline tugmalar",
+    "",
+    "👤 USER FLOW",
+    "• /start — welcome va start video",
+    "• Kod yoki nom yuborish — kino olish",
+    "• /catalog — katalogni ko‘rish",
+    "• /search — qidiruv",
+    `• Majburiy obuna: ${requiredSubscriptions.length > 0 ? "yoqilgan" : "o‘chirilgan"}`,
+    "",
+    "🔐 ADMIN COMMANDS",
+    "• /add KOD | Nomi",
+    "• /genre KOD | Janr 1, Janr 2",
+    "• /setstart",
+    "• /setstructure POST_LINK",
+    "• /delete KOD",
+    "• /list",
+    `• Start video: ${startVideoConfigured ? "sozlangan" : "sozlanmagan"}`,
+    "",
+    `🔄 Oxirgi sinxronlash: ${new Date().toISOString()}`,
+  ].join("\n");
+}
+
+async function refreshStructurePost(): Promise<boolean> {
+  const reference = getStructurePostReference();
+
+  try {
+    await telegramApi("editMessageText", {
+      chat_id: reference.chatId,
+      message_id: reference.messageId,
+      text: formatStructurePost(),
+      disable_web_page_preview: true,
+    });
+    logger.info(
+      { chatId: reference.chatId, messageId: reference.messageId },
+      "Structure post updated",
+    );
+    return true;
+  } catch (err: unknown) {
+    const errorText = err instanceof Error ? err.message : String(err);
+    if (errorText.includes("message is not modified")) {
+      return true;
+    }
+
+    logger.warn(
+      { err, chatId: reference.chatId, messageId: reference.messageId },
+      "Failed to update structure post",
+    );
+    return false;
+  }
+}
+
 function getSubscriptionKeyboard(): ReplyMarkup {
   const buttons: InlineKeyboardButton[] = getRequiredSubscriptions().map(
     (subscription) => ({
-    text: subscription.label,
-    ...(subscription.url ? { url: subscription.url } : {}),
+      text: subscription.label,
+      ...(subscription.url ? { url: subscription.url } : {}),
     }),
   );
 
@@ -284,6 +421,7 @@ async function configureBotCommands(): Promise<void> {
     { command: "add", description: "Kanal postidan kino qo‘shish" },
     { command: "genre", description: "Kino janrini belgilash" },
     { command: "setstart", description: "Start videosini o‘rnatish" },
+    { command: "setstructure", description: "Avto-yangilanadigan postni sozlash" },
     { command: "delete", description: "Kino kodini o‘chirish" },
     { command: "list", description: "Kinolar ro‘yxati" },
   ];
@@ -663,6 +801,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           "1) Kanal postini botga forward qiling",
           "2) /add KOD | Kino nomi",
           "3) /setstart — start videosini o‘rnatish",
+          "4) /setstructure POST_LINK — struktura postini sozlash",
           "/delete KOD",
           "/list",
         );
@@ -732,6 +871,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         command === "/add" ||
         command === "/genre" ||
         command === "/setstart" ||
+        command === "/setstructure" ||
         command === "/delete" ||
         command === "/list"
       ) {
@@ -766,9 +906,37 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         String(startVideo.channelMessageId),
       );
       pendingForwardedPosts.delete(String(userId));
+      await refreshStructurePost();
       await sendText(
         chatId,
         "Start videosi saqlandi. Endi foydalanuvchi /start yuborganda shu video chiqadi.",
+      );
+      return;
+    }
+
+    if (command === "/setstructure") {
+      const reference = parseTelegramPostLink(args);
+      if (!reference) {
+        await sendText(
+          chatId,
+          [
+            "Format: /setstructure POST_LINK",
+            "Masalan: /setstructure https://t.me/MF_Base/6",
+            "",
+            "Bot target kanalda postlarni tahrirlash huquqiga ega bo‘lishi kerak.",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      setSetting("structure_post_chat_id", reference.chatId);
+      setSetting("structure_post_message_id", String(reference.messageId));
+      const updated = await refreshStructurePost();
+      await sendText(
+        chatId,
+        updated
+          ? `Struktura posti sozlandi va yangilandi: ${reference.chatId}/${reference.messageId}`
+          : "Post manzili saqlandi, lekin hozircha tahrirlab bo‘lmadi. Botning kanal huquqlarini tekshiring.",
       );
       return;
     }
@@ -804,6 +972,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         return;
       }
 
+      await refreshStructurePost();
       await sendText(
         chatId,
         `${code} kodi uchun janrlar saqlandi: ${genres.join(", ")}`,
@@ -818,9 +987,13 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         return;
       }
 
+      const deleted = deleteMovie(code);
+      if (deleted) {
+        await refreshStructurePost();
+      }
       await sendText(
         chatId,
-        deleteMovie(code)
+        deleted
           ? `${code} kodi o‘chirildi.`
           : `${code} kodi topilmadi.`,
       );
@@ -870,6 +1043,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         channelMessageId,
       });
       pendingForwardedPosts.delete(String(userId));
+      await refreshStructurePost();
       await sendText(chatId, `${movie.code} — ${movie.title} bazaga saqlandi.`);
       return;
     }
@@ -936,6 +1110,7 @@ export async function startTelegramBot(): Promise<void> {
   await telegramApi("deleteWebhook", { drop_pending_updates: false });
   const bot = await telegramApi<{ username?: string }>("getMe", {});
   await configureBotCommands();
+  await refreshStructurePost();
   logger.info({ username: bot.username }, "Telegram bot connected");
   void poll();
 }

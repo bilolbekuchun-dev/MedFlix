@@ -102,6 +102,7 @@ async function configureBotCommands(): Promise<void> {
   const adminCommands = [
     { command: "start", description: "Botni boshlash" },
     { command: "add", description: "Kanal postidan kino qo‘shish" },
+    { command: "setstart", description: "Start videosini o‘rnatish" },
     { command: "delete", description: "Kino kodini o‘chirish" },
     { command: "list", description: "Kinolar ro‘yxati" },
   ];
@@ -146,6 +147,24 @@ function formatMovieList(): string {
     "Kinolar ro‘yxati:",
     ...movies.map((movie) => `${movie.code} — ${movie.title}`),
   ].join("\n");
+}
+
+function getStartVideoReference(): {
+  channelChatId: string;
+  channelMessageId: number;
+} | null {
+  const channelChatId = getSetting("start_channel_chat_id");
+  const channelMessageId = Number(getSetting("start_channel_message_id"));
+
+  if (
+    !channelChatId ||
+    !Number.isInteger(channelMessageId) ||
+    channelMessageId <= 0
+  ) {
+    return null;
+  }
+
+  return { channelChatId, channelMessageId };
 }
 
 function getForwardedChannelPost(
@@ -203,6 +222,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         "",
         "Endi shu chatga quyidagicha yuboring:",
         "/add KOD | Kino nomi",
+        "yoki /setstart — shu postni start videosi qilish",
         "",
         "Masalan: /add 101 | Interstellar",
       ].join("\n"),
@@ -231,15 +251,29 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           "Admin bo‘limi:",
           "1) Kanal postini botga forward qiling",
           "2) /add KOD | Kino nomi",
+          "3) /setstart — start videosini o‘rnatish",
           "/delete KOD",
           "/list",
         );
       }
 
-      await sendText(
-        chatId,
-        welcomeLines.join("\n"),
-      );
+      const startVideo = getStartVideoReference();
+      if (startVideo) {
+        try {
+          await telegramApi("copyMessage", {
+            chat_id: chatId,
+            from_chat_id: startVideo.channelChatId,
+            message_id: startVideo.channelMessageId,
+          });
+        } catch (err: unknown) {
+          logger.error(
+            { err, chatId, ...startVideo },
+            "Failed to copy start video",
+          );
+        }
+      }
+
+      await sendText(chatId, welcomeLines.join("\n"));
       return;
     }
 
@@ -255,12 +289,47 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     }
 
     if (!userId || !isAdmin(userId)) {
-      if (command === "/add" || command === "/delete" || command === "/list") {
+      if (
+        command === "/add" ||
+        command === "/setstart" ||
+        command === "/delete" ||
+        command === "/list"
+      ) {
         await sendText(
           chatId,
           "Bu buyruq faqat admin uchun. Admin ID sozlanmagan bo‘lsa, TELEGRAM_ADMIN_IDS secretini kiriting.",
         );
       }
+      return;
+    }
+
+    if (command === "/setstart") {
+      const startVideo =
+        getForwardedChannelPost(message.reply_to_message ?? message) ??
+        pendingForwardedPosts.get(String(userId));
+
+      if (!startVideo) {
+        await sendText(
+          chatId,
+          [
+            "Start videosini o‘rnatish uchun:",
+            "1. Kanal video postini shu botga forward qiling.",
+            "2. /setstart yuboring.",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      setSetting("start_channel_chat_id", startVideo.channelChatId);
+      setSetting(
+        "start_channel_message_id",
+        String(startVideo.channelMessageId),
+      );
+      pendingForwardedPosts.delete(String(userId));
+      await sendText(
+        chatId,
+        "Start videosi saqlandi. Endi foydalanuvchi /start yuborganda shu video chiqadi.",
+      );
       return;
     }
 

@@ -32,6 +32,19 @@ database.exec(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS genres (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+  );
+
+  CREATE TABLE IF NOT EXISTS movie_genres (
+    movie_id INTEGER NOT NULL,
+    genre_id INTEGER NOT NULL,
+    PRIMARY KEY (movie_id, genre_id),
+    FOREIGN KEY (movie_id) REFERENCES movies(id) ON DELETE CASCADE,
+    FOREIGN KEY (genre_id) REFERENCES genres(id) ON DELETE CASCADE
+  );
 `);
 
 function mapMovie(row: Record<string, unknown>): Movie {
@@ -65,6 +78,105 @@ export function listMovies(): Movie[] {
     .all() as Record<string, unknown>[];
 
   return rows.map(mapMovie);
+}
+
+export function searchMovies(query: string): Movie[] {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) {
+    return [];
+  }
+
+  const pattern = `%${normalizedQuery}%`;
+  const rows = database
+    .prepare(
+      `SELECT id, code, title, channel_chat_id, channel_message_id, created_at
+       FROM movies
+       WHERE code LIKE ? OR title LIKE ?
+       ORDER BY CASE WHEN code = ? THEN 0 ELSE 1 END, title COLLATE NOCASE
+       LIMIT 25`,
+    )
+    .all(pattern, pattern, normalizedQuery) as Record<string, unknown>[];
+
+  return rows.map(mapMovie);
+}
+
+export function listGenres(): Array<{ name: string; movieCount: number }> {
+  const rows = database
+    .prepare(
+      `SELECT genres.name, COUNT(movie_genres.movie_id) AS movie_count
+       FROM genres
+       LEFT JOIN movie_genres ON movie_genres.genre_id = genres.id
+       GROUP BY genres.id
+       ORDER BY genres.name COLLATE NOCASE`,
+    )
+    .all() as Record<string, unknown>[];
+
+  return rows.map((row) => ({
+    name: String(row.name),
+    movieCount: Number(row.movie_count),
+  }));
+}
+
+export function listMoviesByGenre(genreName: string): Movie[] {
+  const rows = database
+    .prepare(
+      `SELECT movies.id, movies.code, movies.title,
+              movies.channel_chat_id, movies.channel_message_id, movies.created_at
+       FROM movies
+       INNER JOIN movie_genres ON movie_genres.movie_id = movies.id
+       INNER JOIN genres ON genres.id = movie_genres.genre_id
+       WHERE genres.name = ?
+       ORDER BY movies.title COLLATE NOCASE
+       LIMIT 50`,
+    )
+    .all(genreName) as Record<string, unknown>[];
+
+  return rows.map(mapMovie);
+}
+
+export function setMovieGenres(code: string, genreNames: string[]): boolean {
+  const movie = findMovie(code);
+  if (!movie) {
+    return false;
+  }
+
+  database
+    .prepare("DELETE FROM movie_genres WHERE movie_id = ?")
+    .run(movie.id);
+
+  const uniqueNames = [
+    ...new Set(
+      genreNames
+        .map((name) => name.trim())
+        .filter(Boolean)
+        .map((name) => name.slice(0, 80)),
+    ),
+  ];
+
+  for (const genreName of uniqueNames) {
+    database
+      .prepare(
+        `INSERT INTO genres (name) VALUES (?)
+         ON CONFLICT(name) DO NOTHING`,
+      )
+      .run(genreName);
+
+    const genre = database
+      .prepare("SELECT id FROM genres WHERE name = ?")
+      .get(genreName) as Record<string, unknown> | undefined;
+    if (!genre) {
+      continue;
+    }
+
+    database
+      .prepare(
+        `INSERT OR IGNORE INTO movie_genres (movie_id, genre_id)
+         VALUES (?, ?)`,
+      )
+      .run(movie.id, Number(genre.id));
+  }
+
+  return true;
 }
 
 export function upsertMovie(input: {

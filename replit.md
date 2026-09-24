@@ -11,6 +11,9 @@ Telegram bot that stores movie codes in SQLite and copies the matching movie pos
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required secret: `TELEGRAM_BOT_TOKEN` — token from BotFather
 - Optional env: `TELEGRAM_ADMIN_IDS` — comma-separated Telegram user IDs allowed to use admin commands
+- Optional env: `TELEGRAM_REQUIRED_CHANNEL_IDS` and `TELEGRAM_REQUIRED_CHAT_IDS` — comma-separated channel/chat IDs for subscription checks
+- Optional env: `TELEGRAM_REQUIRED_CHANNEL_URLS` and `TELEGRAM_REQUIRED_CHAT_URLS` — matching comma-separated invite/public links for the subscription buttons
+- Optional env: `TELEGRAM_DISCUSSION_URL` — discussion link shown below delivered movies
 
 ## Stack
 
@@ -32,12 +35,13 @@ Telegram bot that stores movie codes in SQLite and copies the matching movie pos
 - The bot uses Telegram long polling so it works without a public webhook URL.
 - Movie delivery uses `copyMessage`, so the bot does not download or duplicate video files.
 - Telegram update offsets are persisted in SQLite to avoid replaying old messages after restart.
-- Admin access is controlled with `TELEGRAM_ADMIN_IDS`; regular users can only request movies by code.
+- Admin access is controlled with `TELEGRAM_ADMIN_IDS`; regular users can search by code or title after the optional subscription gate.
+- Subscription checks use Telegram `getChatMember`; administrators bypass the gate.
 
 ## Product
 
-- Users send a movie code and receive the matching post from the source channel.
-- Admins can add or update movies with `/add`, remove them with `/delete`, and inspect the catalog with `/list`.
+- Users send a movie code or title and receive the matching post from the source channel. `/catalog` and inline buttons provide browsing.
+- Admins can add or update movies with `/add`, assign genres with `/genre`, remove them with `/delete`, and inspect the catalog with `/list`.
 
 ## User preferences
 

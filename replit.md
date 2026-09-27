@@ -44,6 +44,8 @@ Telegram bot that stores movie codes in SQLite and copies the matching movie pos
 
 - Users send a movie code or title and receive the matching post from the source channel. `/catalog` and inline buttons provide browsing.
 - Admins can add or update movies with `/add`, assign genres with `/genre`, remove them with `/delete`, and inspect the catalog with `/list`.
+- Admins can create a serial or multi-post movie with `/addseries KOD | Nomi`, then attach posts with `/addpart KOD | FASL | QISM | Nomi`. The shorter `/addpart KOD | QISM | Nomi` form maps to season 1.
+- Render deployment uses `render.yaml`, a Node 24 web service, `/api/healthz`, and a persistent disk for the SQLite database.
 
 ## User preferences
 

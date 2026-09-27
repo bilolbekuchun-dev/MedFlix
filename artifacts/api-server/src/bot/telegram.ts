@@ -1,13 +1,22 @@
 import {
   deleteMovie,
+  deleteSeries,
   findMovie,
+  findSeries,
+  findSeriesEpisode,
   getSetting,
   listMovies,
+  listSeries,
+  listSeriesSeasons,
+  listSeriesEpisodes,
   listGenres,
   listMoviesByGenre,
+  searchSeries,
   setSetting,
   setMovieGenres,
   searchMovies,
+  upsertSeries,
+  upsertSeriesEpisode,
   upsertMovie,
 } from "./database";
 import { logger } from "../lib/logger";
@@ -246,6 +255,7 @@ function formatTelegramPostLink(reference: TelegramPostReference): string {
 
 function formatStructurePost(): string {
   const movies = listMovies();
+  const series = listSeries();
   const genres = listGenres();
   const startVideoConfigured = Boolean(
     getSetting("start_channel_chat_id") &&
@@ -262,6 +272,7 @@ function formatStructurePost(): string {
     "",
     "📦 DATABASE",
     `• SQLite: ${movies.length} ta kino/material`,
+    `• Seriallar: ${series.length} ta, jami ${series.reduce((sum, item) => sum + item.episodeCount, 0)} ta qism`,
     `• Janrlar: ${genres.length} ta`,
     "",
     "📚 SO‘NGGI KODLAR",
@@ -282,6 +293,8 @@ function formatStructurePost(): string {
     "",
     "🔐 ADMIN COMMANDS",
     "• /add KOD | Nomi",
+    "• /addseries KOD | Serial nomi",
+    "• /addpart KOD | Fasl | Qism | Nomi",
     "• /genre KOD | Janr 1, Janr 2",
     "• /setstart",
     "• /setstructure POST_LINK",
@@ -431,10 +444,13 @@ async function configureBotCommands(): Promise<void> {
     { command: "catalog", description: "Katalogni ko‘rish" },
     { command: "search", description: "Kino nomi bo‘yicha qidirish" },
     { command: "add", description: "Kanal postidan kino qo‘shish" },
+    { command: "addseries", description: "Serial yoki ko‘p qismli kino yaratish" },
+    { command: "addpart", description: "Serial qismi qo‘shish" },
     { command: "genre", description: "Kino janrini belgilash" },
     { command: "setstart", description: "Start videosini o‘rnatish" },
     { command: "setstructure", description: "Avto-yangilanadigan postni sozlash" },
     { command: "delete", description: "Kino kodini o‘chirish" },
+    { command: "deleteseries", description: "Serialni o‘chirish" },
     { command: "list", description: "Kinolar ro‘yxati" },
   ];
 
@@ -470,13 +486,21 @@ function commandParts(text: string): { command: string; args: string } {
 
 function formatMovieList(): string {
   const movies = listMovies();
-  if (movies.length === 0) {
+  const series = listSeries();
+  if (movies.length === 0 && series.length === 0) {
     return "Hozircha bazada kino yo‘q.";
   }
 
   return [
-    "Kinolar ro‘yxati:",
+    "MedFlix bazasi:",
+    "",
+    "Kinolar:",
     ...movies.map((movie) => `${movie.code} — ${movie.title}`),
+    "",
+    "Seriallar va ko‘p qismli kinolar:",
+    ...series.map(
+      (item) => `${item.code} — ${item.title} (${item.episodeCount} qism)`,
+    ),
   ].join("\n");
 }
 
@@ -490,6 +514,21 @@ function movieKeyboard(movies: ReturnType<typeof listMovies>): ReplyMarkup | und
       {
         text: `${movie.code} — ${movie.title}`.slice(0, 64),
         callback_data: `movie:${encodeCallbackValue(movie.code)}`,
+      },
+    ]),
+  };
+}
+
+function seriesKeyboard(series: ReturnType<typeof listSeries>): ReplyMarkup | undefined {
+  if (series.length === 0) {
+    return undefined;
+  }
+
+  return {
+    inline_keyboard: series.slice(0, 25).map((item) => [
+      {
+        text: `📺 ${item.code} — ${item.title} (${item.seasonCount} fasl, ${item.episodeCount} qism)`.slice(0, 64),
+        callback_data: `series:${encodeCallbackValue(item.code)}`,
       },
     ]),
   };
@@ -513,10 +552,12 @@ function genreKeyboard(): ReplyMarkup | undefined {
 
 function catalogKeyboard(
   movies: ReturnType<typeof listMovies>,
+  series: ReturnType<typeof listSeries>,
 ): ReplyMarkup | undefined {
   const rows = [
     ...(genreKeyboard()?.inline_keyboard ?? []),
     ...(movieKeyboard(movies)?.inline_keyboard ?? []),
+    ...(seriesKeyboard(series)?.inline_keyboard ?? []),
   ];
 
   return rows.length > 0 ? { inline_keyboard: rows } : undefined;
@@ -524,23 +565,25 @@ function catalogKeyboard(
 
 async function sendCatalog(chatId: number): Promise<void> {
   const movies = listMovies();
+  const series = listSeries();
   const genres = listGenres();
   const lines = [
     "🎬 MedFlix katalogi",
     "",
-    movies.length > 0
-      ? `Jami: ${movies.length} ta material`
-      : "Katalog hozircha bo‘sh.",
+    `Kinolar: ${movies.length} ta`,
+    `Seriallar: ${series.length} ta`,
   ];
 
-  if (genres.length > 0) {
-    lines.push("", "Janr bo‘yicha ko‘rish uchun tugmani tanlang.");
+  if (genres.length > 0 || series.length > 0 || movies.length > 0) {
+    lines.push("", "Kerakli janr, kino yoki serialni tanlang.");
+  } else {
+    lines.push("", "Katalog hozircha bo‘sh.");
   }
 
   await sendText(
     chatId,
     lines.join("\n"),
-    catalogKeyboard(movies),
+    catalogKeyboard(movies, series),
   );
 }
 
@@ -557,21 +600,116 @@ async function sendMovieResults(
   await sendText(chatId, heading, movieKeyboard(movies));
 }
 
-async function deliverMovie(
+async function sendSeriesEpisodes(
   chatId: number,
-  movie: ReturnType<typeof findMovie>,
+  seriesCode: string,
 ): Promise<void> {
-  if (!movie) {
-    await sendText(chatId, "Bu kino bazada topilmadi.");
+  const series = findSeries(seriesCode);
+  if (!series) {
+    await sendText(chatId, "Serial kodi bazada topilmadi.");
     return;
   }
 
+  const episodes = listSeriesEpisodes(seriesCode);
+  if (episodes.length === 0) {
+    await sendText(chatId, `${series.title} uchun hali qism qo‘shilmagan.`);
+    return;
+  }
+
+  const seasons = listSeriesSeasons(seriesCode);
+  if (seasons.length > 1) {
+    await sendText(
+      chatId,
+      [
+        `📺 ${series.title}`,
+        `Fasllar soni: ${seasons.length}`,
+        "Ko‘rish uchun faslni tanlang:",
+      ].join("\n"),
+      {
+        inline_keyboard: seasons.map((seasonNumber) => [
+          {
+            text: `${seasonNumber}-fasl`,
+            callback_data: `season:${encodeCallbackValue(series.code)}:${seasonNumber}`,
+          },
+        ]),
+      },
+    );
+    return;
+  }
+
+  await sendSeriesSeasonEpisodes(chatId, series.code, seasons[0] ?? 1);
+}
+
+async function sendSeriesSeasonEpisodes(
+  chatId: number,
+  seriesCode: string,
+  seasonNumber: number,
+): Promise<void> {
+  const series = findSeries(seriesCode);
+  if (!series) {
+    await sendText(chatId, "Serial kodi bazada topilmadi.");
+    return;
+  }
+
+  const episodes = listSeriesEpisodes(seriesCode, seasonNumber);
+  if (episodes.length === 0) {
+    await sendText(
+      chatId,
+      `${series.title} ${seasonNumber}-faslida hali qism qo‘shilmagan.`,
+    );
+    return;
+  }
+
+  await sendText(
+    chatId,
+    [
+      `📺 ${series.title}`,
+      `Kod: ${series.code}`,
+      `${seasonNumber}-fasl — ${episodes.length} ta qism`,
+      "",
+      "Ko‘rish uchun qismni tanlang:",
+    ].join("\n"),
+    {
+      inline_keyboard: episodes.slice(0, 50).map((episode) => [
+        {
+          text: `${episode.episodeNumber}-qism${episode.title ? ` — ${episode.title}` : ""}`.slice(
+            0,
+            64,
+          ),
+          callback_data: `episode:${encodeCallbackValue(series.code)}:${seasonNumber}:${episode.episodeNumber}`,
+        },
+      ]),
+    },
+  );
+}
+
+async function sendSeriesResults(
+  chatId: number,
+  series: ReturnType<typeof listSeries>,
+  heading: string,
+): Promise<void> {
+  if (series.length === 0) {
+    return;
+  }
+
+  await sendText(chatId, heading, seriesKeyboard(series));
+}
+
+async function deliverChannelPost(
+  chatId: number,
+  reference: {
+    code: string;
+    channelChatId: string;
+    channelMessageId: number;
+  },
+  kind: "Kino" | "Qism",
+): Promise<void> {
   try {
     const discussionUrl = getDiscussionUrl();
     await telegramApi("copyMessage", {
       chat_id: chatId,
-      from_chat_id: movie.channelChatId,
-      message_id: movie.channelMessageId,
+      from_chat_id: reference.channelChatId,
+      message_id: reference.channelMessageId,
       ...(discussionUrl
         ? {
             reply_markup: {
@@ -587,18 +725,18 @@ async function deliverMovie(
     logger.error(
       {
         err,
-        code: movie.code,
-        channelChatId: movie.channelChatId,
-        channelMessageId: movie.channelMessageId,
+        code: reference.code,
+        channelChatId: reference.channelChatId,
+        channelMessageId: reference.channelMessageId,
       },
-      "Failed to copy movie message",
+      `Failed to copy ${kind.toLowerCase()} message`,
     );
 
     let userMessage =
-      "Kino topildi, lekin kanal postini yuborib bo‘lmadi. Bot manba kanalga qo‘shilganini tekshiring.";
+      `${kind} topildi, lekin kanal postini yuborib bo‘lmadi. Bot manba kanalga qo‘shilganini tekshiring.`;
     if (errorText.includes("message to copy not found")) {
       userMessage =
-        "Kino kodi bazada bor, lekin kanal postining ID raqami topilmadi. Postni botga forward qilib, qaytadan /add qiling.";
+        `${kind} bazada bor, lekin kanal postining ID raqami topilmadi. Postni botga forward qilib, qaytadan qo‘shing.`;
     } else if (errorText.includes("chat not found")) {
       userMessage =
         "Kanal topilmadi. Forward orqali qaytadan /add qiling yoki kanal ID sini tekshiring.";
@@ -612,6 +750,41 @@ async function deliverMovie(
 
     await sendText(chatId, userMessage);
   }
+}
+
+async function deliverMovie(
+  chatId: number,
+  movie: ReturnType<typeof findMovie>,
+): Promise<void> {
+  if (!movie) {
+    await sendText(chatId, "Bu kino bazada topilmadi.");
+    return;
+  }
+
+  await deliverChannelPost(chatId, movie, "Kino");
+}
+
+async function deliverSeriesEpisode(
+  chatId: number,
+  seriesCode: string,
+  seasonNumber: number,
+  episodeNumber: number,
+): Promise<void> {
+  const episode = findSeriesEpisode(seriesCode, seasonNumber, episodeNumber);
+  if (!episode) {
+    await sendText(chatId, "Bu serial qismi bazada topilmadi.");
+    return;
+  }
+
+  await deliverChannelPost(
+    chatId,
+    {
+      code: `${seriesCode}-${episodeNumber}`,
+      channelChatId: episode.channelChatId,
+      channelMessageId: episode.channelMessageId,
+    },
+    "Qism",
+  );
 }
 
 function getStartVideoReference(): {
@@ -755,6 +928,71 @@ async function handleCallbackQuery(
       return;
     }
     await deliverMovie(chatId, findMovie(code));
+    return;
+  }
+
+  if (data.startsWith("series:")) {
+    const code = decodeCallbackValue(data.slice("series:".length));
+    if (!code) {
+      await sendText(chatId, "Serial kodi ma’lumotini o‘qib bo‘lmadi.");
+      return;
+    }
+    await sendSeriesEpisodes(chatId, code);
+    return;
+  }
+
+  if (data.startsWith("season:")) {
+    const payload = data.slice("season:".length);
+    const separatorIndex = payload.lastIndexOf(":");
+    const code = decodeCallbackValue(
+      separatorIndex >= 0 ? payload.slice(0, separatorIndex) : "",
+    );
+    const seasonNumber = Number(
+      separatorIndex >= 0 ? payload.slice(separatorIndex + 1) : "",
+    );
+    if (
+      !code ||
+      !Number.isInteger(seasonNumber) ||
+      seasonNumber <= 0
+    ) {
+      await sendText(chatId, "Serial fasli ma’lumotini o‘qib bo‘lmadi.");
+      return;
+    }
+    await sendSeriesSeasonEpisodes(chatId, code, seasonNumber);
+    return;
+  }
+
+  if (data.startsWith("episode:")) {
+    const payload = data.slice("episode:".length);
+    const episodeSeparatorIndex = payload.lastIndexOf(":");
+    const seasonPayload = payload.slice(0, episodeSeparatorIndex);
+    const seasonSeparatorIndex = seasonPayload.lastIndexOf(":");
+    const code = decodeCallbackValue(
+      seasonSeparatorIndex >= 0
+        ? seasonPayload.slice(0, seasonSeparatorIndex)
+        : "",
+    );
+    const seasonNumber = Number(
+      seasonSeparatorIndex >= 0
+        ? seasonPayload.slice(seasonSeparatorIndex + 1)
+        : "",
+    );
+    const episodeNumber = Number(
+      episodeSeparatorIndex >= 0
+        ? payload.slice(episodeSeparatorIndex + 1)
+        : "",
+    );
+    if (
+      !code ||
+      !Number.isInteger(seasonNumber) ||
+      seasonNumber <= 0 ||
+      !Number.isInteger(episodeNumber) ||
+      episodeNumber <= 0
+    ) {
+      await sendText(chatId, "Serial qismi ma’lumotini o‘qib bo‘lmadi.");
+      return;
+    }
+    await deliverSeriesEpisode(chatId, code, seasonNumber, episodeNumber);
   }
 }
 
@@ -779,6 +1017,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         "",
         "Endi shu chatga quyidagicha yuboring:",
         "/add KOD | Kino nomi",
+        "/addpart SERIAL_KOD | FASL | QISM | Qism nomi",
         "yoki /setstart — shu postni start videosi qilish",
         "",
         "Masalan: /add 101 | Interstellar",
@@ -812,9 +1051,12 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           "Admin bo‘limi:",
           "1) Kanal postini botga forward qiling",
           "2) /add KOD | Kino nomi",
-          "3) /setstart — start videosini o‘rnatish",
-          "4) /setstructure POST_LINK — struktura postini sozlash",
+          "3) /addseries KOD | Serial nomi",
+          "4) Har bir post uchun /addpart KOD | FASL | QISM | Nomi",
+          "5) /setstart — start videosini o‘rnatish",
+          "6) /setstructure POST_LINK — struktura postini sozlash",
           "/delete KOD",
+          "/deleteseries KOD",
           "/list",
         );
       }
@@ -864,10 +1106,25 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         return;
       }
 
+      const exactSeries = findSeries(normalizeCode(args));
+      if (exactSeries) {
+        await sendSeriesEpisodes(chatId, exactSeries.code);
+        return;
+      }
+
       const exactMovie = findMovie(normalizeCode(args));
       if (exactMovie) {
         await deliverMovie(chatId, exactMovie);
         return;
+      }
+
+      const seriesMatches = searchSeries(args);
+      if (seriesMatches.length > 0) {
+        await sendSeriesResults(
+          chatId,
+          seriesMatches,
+          `«${args}» bo‘yicha seriallar:`,
+        );
       }
 
       await sendMovieResults(
@@ -881,10 +1138,13 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     if (!userId || !isAdmin(userId)) {
       if (
         command === "/add" ||
+        command === "/addseries" ||
+        command === "/addpart" ||
         command === "/genre" ||
         command === "/setstart" ||
         command === "/setstructure" ||
         command === "/delete" ||
+        command === "/deleteseries" ||
         command === "/list"
       ) {
         await sendText(
@@ -955,6 +1215,108 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       return;
     }
 
+    if (command === "/addseries") {
+      const [rawCode, rawTitle] = args
+        .split("|")
+        .map((value) => value.trim());
+      const code = normalizeCode(rawCode ?? "");
+      const title = rawTitle ?? "";
+
+      if (!code || !title) {
+        await sendText(
+          chatId,
+          [
+            "Format: /addseries KOD | Serial nomi",
+            "Masalan: /addseries DH | Dr. House",
+            "Bu format serial va bir nechta postli kinolar uchun ham ishlaydi.",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      if (findMovie(code)) {
+        await sendText(
+          chatId,
+          `${code} kodi oddiy kino sifatida mavjud. Serial uchun boshqa kod tanlang.`,
+        );
+        return;
+      }
+
+      const series = upsertSeries({ code, title });
+      await refreshStructurePost();
+      await sendText(
+        chatId,
+        `${series.code} — ${series.title} seriali yaratildi. Endi postlarni forward qilib /addpart yuboring.`,
+      );
+      return;
+    }
+
+    if (command === "/addpart") {
+      const partArgs = args.split("|").map((value) => value.trim());
+      const [rawCode, rawSeasonOrEpisode, rawEpisodeOrTitle, rawPartTitle] =
+        partArgs;
+      const code = normalizeCode(rawCode ?? "");
+      const hasSeason = partArgs.length >= 4;
+      const seasonNumber = Number(hasSeason ? rawSeasonOrEpisode : 1);
+      const episodeNumber = Number(
+        hasSeason ? rawEpisodeOrTitle : rawSeasonOrEpisode,
+      );
+      const title = hasSeason ? rawPartTitle ?? "" : rawEpisodeOrTitle ?? "";
+      const referencedForward =
+        getForwardedChannelPost(message.reply_to_message ?? message) ??
+        pendingForwardedPosts.get(String(userId));
+
+      if (
+        !code ||
+        !Number.isInteger(seasonNumber) ||
+        seasonNumber <= 0 ||
+        !Number.isInteger(episodeNumber) ||
+        episodeNumber <= 0 ||
+        !referencedForward
+      ) {
+        await sendText(
+          chatId,
+          [
+            "Yangi format: /addpart SERIAL_KOD | FASL | QISM | Qism nomi",
+            "Eski format: /addpart SERIAL_KOD | QISM | Qism nomi (1-fasl)",
+            "1. Serial yarating: /addseries DH | Dr. House",
+            "2. Kanal postini botga forward qiling.",
+            "3. /addpart DH | 1 | 1 | 1-qism",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      if (!findSeries(code)) {
+        await sendText(
+          chatId,
+          `${code} seriali topilmadi. Avval /addseries ${code} | Serial nomi yuboring.`,
+        );
+        return;
+      }
+
+      const episode = upsertSeriesEpisode({
+        seriesCode: code,
+        seasonNumber,
+        episodeNumber,
+        title,
+        channelChatId: referencedForward.channelChatId,
+        channelMessageId: referencedForward.channelMessageId,
+      });
+      if (!episode) {
+        await sendText(chatId, "Serial qismini saqlab bo‘lmadi.");
+        return;
+      }
+
+      pendingForwardedPosts.delete(String(userId));
+      await refreshStructurePost();
+      await sendText(
+        chatId,
+        `${code} serialining ${seasonNumber}-fasl ${episodeNumber}-qismi bazaga saqlandi.`,
+      );
+      return;
+    }
+
     if (command === "/list") {
       await sendText(chatId, formatMovieList());
       return;
@@ -1014,6 +1376,26 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       return;
     }
 
+    if (command === "/deleteseries") {
+      const code = normalizeCode(args);
+      if (!code) {
+        await sendText(chatId, "Format: /deleteseries SERIAL_KOD");
+        return;
+      }
+
+      const deleted = deleteSeries(code);
+      if (deleted) {
+        await refreshStructurePost();
+      }
+      await sendText(
+        chatId,
+        deleted
+          ? `${code} seriali va uning barcha qismlari o‘chirildi.`
+          : `${code} seriali topilmadi.`,
+      );
+      return;
+    }
+
     if (command === "/add") {
       const [rawCode, rawTitle, rawChatId, rawMessageId] = args
         .split("|")
@@ -1066,10 +1448,30 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   }
 
   const code = normalizeCode(text);
+  const series = findSeries(code);
+  if (series) {
+    await sendSeriesEpisodes(chatId, series.code);
+    return;
+  }
+
   const movie = findMovie(code);
   if (movie) {
     await deliverMovie(chatId, movie);
     return;
+  }
+
+  const seriesMatches = searchSeries(text);
+  if (seriesMatches.length === 1) {
+    await sendSeriesEpisodes(chatId, seriesMatches[0].code);
+    return;
+  }
+
+  if (seriesMatches.length > 1) {
+    await sendSeriesResults(
+      chatId,
+      seriesMatches,
+      `«${text}» bo‘yicha seriallar:`,
+    );
   }
 
   const matches = searchMovies(text);

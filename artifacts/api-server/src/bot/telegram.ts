@@ -323,53 +323,95 @@ function formatStructurePost(): string {
   ].join("\n");
 }
 
+let botUsername = "";
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function buildBotLink(code: string): string | null {
+  if (!botUsername || !/^[A-Za-z0-9_-]{1,64}$/.test(code)) {
+    return null;
+  }
+  return `https://t.me/${botUsername}?start=${code}`;
+}
+
 function formatContentsPost(): string {
   const byCode = (a: { code: string }, b: { code: string }) =>
     a.code.localeCompare(b.code, undefined, { numeric: true });
   const movies = [...listMovies()].sort(byCode);
   const series = [...listSeries()].sort(byCode);
-  const limit = 3800;
+  const maxVisible = 3900;
+  const maxLinks = 90;
 
-  const header = ["📚 MEDFLIX — MUNDARIJA", ""];
-  const movieLines = movies.map((movie) => `${movie.code} — ${movie.title}`);
-  const seriesLines = series.map(
-    (item) => `${item.code} — ${item.title} (${item.episodeCount} qism)`,
-  );
-
-  const lines: string[] = [...header];
-  let length = lines.join("\n").length;
+  let visible = 0;
+  let links = 0;
   let skipped = 0;
+  const out: string[] = [];
 
-  const addSection = (title: string, items: string[]) => {
+  const push = (html: string, plain: string) => {
+    out.push(html);
+    visible += plain.length + 1;
+  };
+
+  type Entry = { code: string; title: string; suffix: string };
+  const addSection = (heading: string, items: Entry[]) => {
     if (items.length === 0) {
       return;
     }
-    lines.push(title);
-    length += title.length + 1;
+    push(heading, heading);
     for (const item of items) {
-      if (length + item.length + 1 > limit) {
+      const plain = `${item.code} — ${item.title}${item.suffix}`;
+      if (visible + plain.length + 1 > maxVisible) {
         skipped += 1;
         continue;
       }
-      lines.push(item);
-      length += item.length + 1;
+      const link = links < maxLinks ? buildBotLink(item.code) : null;
+      if (link) {
+        links += 1;
+      }
+      const titleHtml = link
+        ? `<a href="${link}">${escapeHtml(item.title)}</a>`
+        : escapeHtml(item.title);
+      push(
+        `${escapeHtml(item.code)} — ${titleHtml}${escapeHtml(item.suffix)}`,
+        plain,
+      );
     }
-    lines.push("");
-    length += 1;
+    push("", "");
   };
 
-  addSection("🎬 KINOLAR", movieLines);
-  addSection("📺 SERIALLAR", seriesLines);
+  const title = "📚 MEDFLIX — MUNDARIJA";
+  push(title, title);
+  push("", "");
+  addSection(
+    "🎬 KINOLAR",
+    movies.map((movie) => ({ code: movie.code, title: movie.title, suffix: "" })),
+  );
+  addSection(
+    "📺 SERIALLAR",
+    series.map((item) => ({
+      code: item.code,
+      title: item.title,
+      suffix: ` (${item.episodeCount} qism)`,
+    })),
+  );
 
   if (movies.length === 0 && series.length === 0) {
-    lines.push("Hali kino qo‘shilmagan.");
+    const empty = "Hali kino qo‘shilmagan.";
+    push(empty, empty);
   }
   if (skipped > 0) {
-    lines.push(`… va yana ${skipped} ta (joy yetmadi)`);
+    const more = `… va yana ${skipped} ta (joy yetmadi)`;
+    push(escapeHtml(more), more);
   }
-  lines.push("", "🔎 Kodni botga yuboring — kino keladi.");
+  const footer = "🔎 Kino nomini bosing yoki kodni botga yuboring.";
+  push(footer, footer);
 
-  return lines.join("\n");
+  return out.join("\n");
 }
 
 async function refreshContentsPost(): Promise<boolean> {
@@ -387,6 +429,7 @@ async function refreshContentsPost(): Promise<boolean> {
       chat_id: reference.chatId,
       message_id: reference.messageId,
       text: formatContentsPost(),
+      parse_mode: "HTML",
       disable_web_page_preview: true,
     });
     logger.info(
@@ -1169,6 +1212,20 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   if (text.startsWith("/")) {
     const { command, args } = commandParts(text);
 
+    if (command === "/start" && args) {
+      const payloadCode = normalizeCode(args);
+      const payloadSeries = findSeries(payloadCode);
+      if (payloadSeries) {
+        await sendSeriesEpisodes(chatId, payloadSeries.code);
+        return;
+      }
+      const payloadMovie = findMovie(payloadCode);
+      if (payloadMovie) {
+        await deliverMovie(chatId, payloadMovie);
+        return;
+      }
+    }
+
     if (command === "/start" || command === "/help") {
       const welcomeLines = [
         "Kino botga xush kelibsiz.",
@@ -1756,6 +1813,7 @@ export async function startTelegramBot(): Promise<void> {
 
   await telegramApi("deleteWebhook", { drop_pending_updates: false });
   const bot = await telegramApi<{ username?: string }>("getMe", {});
+  botUsername = bot.username ?? "";
   await configureBotCommands();
   await refreshStructurePost();
   logger.info({ username: bot.username }, "Telegram bot connected");

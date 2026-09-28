@@ -194,6 +194,11 @@ const defaultStructurePost: TelegramPostReference = {
   messageId: 6,
 };
 
+const defaultContentsPost: TelegramPostReference = {
+  chatId: "@MF_Base",
+  messageId: 22,
+};
+
 function parseTelegramPostLink(value: string): TelegramPostReference | null {
   try {
     const url = new URL(value.trim());
@@ -243,6 +248,17 @@ function getStructurePostReference(): TelegramPostReference {
   return defaultStructurePost;
 }
 
+function getContentsPostReference(): TelegramPostReference {
+  const chatId = getSetting("contents_post_chat_id");
+  const messageId = Number(getSetting("contents_post_message_id"));
+
+  if (chatId && Number.isInteger(messageId) && messageId > 0) {
+    return { chatId, messageId };
+  }
+
+  return defaultContentsPost;
+}
+
 function formatTelegramPostLink(reference: TelegramPostReference): string {
   if (reference.chatId.startsWith("@")) {
     return `https://t.me/${reference.chatId.slice(1)}/${reference.messageId}`;
@@ -264,10 +280,7 @@ function formatStructurePost(): string {
       getSetting("start_channel_message_id"),
   );
   const requiredSubscriptions = getRequiredSubscriptions();
-  const recentMovies = movies
-    .slice(0, 12)
-    .map((movie) => `• ${movie.code} — ${movie.title}`)
-    .join("\n");
+  const contentsLink = formatTelegramPostLink(getContentsPostReference());
 
   return [
     "🩺 MEDFLIX BOT — TIZIM MA’LUMOTI",
@@ -277,8 +290,8 @@ function formatStructurePost(): string {
     `• Seriallar: ${series.length} ta, jami ${series.reduce((sum, item) => sum + item.episodeCount, 0)} ta qism`,
     `• Janrlar: ${genres.length} ta`,
     "",
-    "📚 SO‘NGGI KODLAR",
-    recentMovies || "• Hali kino qo‘shilmagan",
+    "📚 MUNDARIJA (barcha kodlar)",
+    `• ${contentsLink}`,
     "",
     "🔌 API VA ISHLASH STRUKTURASI",
     "• Telegram Bot API + long polling",
@@ -301,6 +314,7 @@ function formatStructurePost(): string {
     "• /genre KOD | Janr 1, Janr 2",
     "• /setstart",
     "• /setstructure POST_LINK",
+    "• /setcontents POST_LINK",
     "• /delete KOD",
     "• /list",
     `• Start video: ${startVideoConfigured ? "sozlangan" : "sozlanmagan"}`,
@@ -309,7 +323,98 @@ function formatStructurePost(): string {
   ].join("\n");
 }
 
+function formatContentsPost(): string {
+  const byCode = (a: { code: string }, b: { code: string }) =>
+    a.code.localeCompare(b.code, undefined, { numeric: true });
+  const movies = [...listMovies()].sort(byCode);
+  const series = [...listSeries()].sort(byCode);
+  const limit = 3800;
+
+  const header = ["📚 MEDFLIX — MUNDARIJA", ""];
+  const movieLines = movies.map((movie) => `${movie.code} — ${movie.title}`);
+  const seriesLines = series.map(
+    (item) => `${item.code} — ${item.title} (${item.episodeCount} qism)`,
+  );
+
+  const lines: string[] = [...header];
+  let length = lines.join("\n").length;
+  let skipped = 0;
+
+  const addSection = (title: string, items: string[]) => {
+    if (items.length === 0) {
+      return;
+    }
+    lines.push(title);
+    length += title.length + 1;
+    for (const item of items) {
+      if (length + item.length + 1 > limit) {
+        skipped += 1;
+        continue;
+      }
+      lines.push(item);
+      length += item.length + 1;
+    }
+    lines.push("");
+    length += 1;
+  };
+
+  addSection("🎬 KINOLAR", movieLines);
+  addSection("📺 SERIALLAR", seriesLines);
+
+  if (movies.length === 0 && series.length === 0) {
+    lines.push("Hali kino qo‘shilmagan.");
+  }
+  if (skipped > 0) {
+    lines.push(`… va yana ${skipped} ta (joy yetmadi)`);
+  }
+  lines.push("", "🔎 Kodni botga yuboring — kino keladi.");
+
+  return lines.join("\n");
+}
+
+async function refreshContentsPost(): Promise<boolean> {
+  const reference = getContentsPostReference();
+  const structure = getStructurePostReference();
+  if (
+    reference.chatId === structure.chatId &&
+    reference.messageId === structure.messageId
+  ) {
+    return false;
+  }
+
+  try {
+    await telegramApi("editMessageText", {
+      chat_id: reference.chatId,
+      message_id: reference.messageId,
+      text: formatContentsPost(),
+      disable_web_page_preview: true,
+    });
+    logger.info(
+      { chatId: reference.chatId, messageId: reference.messageId },
+      "Contents post updated",
+    );
+    return true;
+  } catch (err: unknown) {
+    const errorText = err instanceof Error ? err.message : String(err);
+    if (errorText.includes("message is not modified")) {
+      return true;
+    }
+
+    logger.warn(
+      { err, chatId: reference.chatId, messageId: reference.messageId },
+      "Failed to update contents post",
+    );
+    return false;
+  }
+}
+
 async function refreshStructurePost(): Promise<boolean> {
+  const structureUpdated = await updateStructurePost();
+  await refreshContentsPost();
+  return structureUpdated;
+}
+
+async function updateStructurePost(): Promise<boolean> {
   const reference = getStructurePostReference();
 
   try {
@@ -453,6 +558,7 @@ async function configureBotCommands(): Promise<void> {
     { command: "genre", description: "Kino janrini belgilash" },
     { command: "setstart", description: "Start videosini o‘rnatish" },
     { command: "setstructure", description: "Avto-yangilanadigan postni sozlash" },
+    { command: "setcontents", description: "Mundarija postini sozlash" },
     { command: "delete", description: "Kino kodini o‘chirish" },
     { command: "deleteseries", description: "Serialni o‘chirish" },
     { command: "list", description: "Kinolar ro‘yxati" },
@@ -1171,6 +1277,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         command === "/genre" ||
         command === "/setstart" ||
         command === "/setstructure" ||
+        command === "/setcontents" ||
         command === "/delete" ||
         command === "/deleteseries" ||
         command === "/list"
@@ -1238,6 +1345,36 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         chatId,
         updated
           ? `Struktura posti sozlandi va yangilandi: ${reference.chatId}/${reference.messageId}`
+          : "Post manzili saqlandi, lekin hozircha tahrirlab bo‘lmadi. Botning kanal huquqlarini tekshiring.",
+      );
+      return;
+    }
+
+    if (command === "/setcontents") {
+      const reference = parseTelegramPostLink(args);
+      if (!reference) {
+        const currentReference = getContentsPostReference();
+        await sendText(
+          chatId,
+          [
+            "Format: /setcontents POST_LINK",
+            `Joriy mundarija posti: ${formatTelegramPostLink(currentReference)}`,
+            "Masalan: /setcontents https://t.me/MF_Base/22",
+            "",
+            "Bot target kanalda postlarni tahrirlash huquqiga ega bo‘lishi kerak.",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      setSetting("contents_post_chat_id", reference.chatId);
+      setSetting("contents_post_message_id", String(reference.messageId));
+      await updateStructurePost();
+      const updated = await refreshContentsPost();
+      await sendText(
+        chatId,
+        updated
+          ? `Mundarija posti sozlandi va yangilandi: ${formatTelegramPostLink(reference)}`
           : "Post manzili saqlandi, lekin hozircha tahrirlab bo‘lmadi. Botning kanal huquqlarini tekshiring.",
       );
       return;
@@ -1430,6 +1567,14 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         .map((value) => value.trim());
       const code = normalizeCode(rawCode ?? "");
       const title = rawTitle ?? "";
+
+      if (code && findSeries(code)) {
+        await sendText(
+          chatId,
+          `${code} kodi serial sifatida band. Avval /deleteseries ${code} yuboring yoki boshqa kod tanlang.`,
+        );
+        return;
+      }
       const referencedForward =
         getForwardedChannelPost(message.reply_to_message ?? message) ??
         pendingForwardedPosts.get(String(userId));

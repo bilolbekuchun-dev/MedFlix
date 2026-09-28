@@ -2,6 +2,7 @@ import {
   deleteMovie,
   deleteSeries,
   findMovie,
+  listMoviePosts,
   findSeries,
   findSeriesEpisode,
   getSetting,
@@ -18,6 +19,7 @@ import {
   upsertSeries,
   upsertSeriesEpisode,
   upsertMovie,
+  upsertMoviePost,
 } from "./database";
 import { logger } from "../lib/logger";
 
@@ -292,7 +294,8 @@ function formatStructurePost(): string {
     `• Majburiy obuna: ${requiredSubscriptions.length > 0 ? "yoqilgan" : "o‘chirilgan"}`,
     "",
     "🔐 ADMIN COMMANDS",
-    "• /add KOD | Nomi",
+    "• /add KOD | Nomi — 1-post",
+    "• /addpost KOD | Tartib | Izoh — qo‘shimcha post",
     "• /addseries KOD | Serial nomi",
     "• /addpart KOD | Fasl | Qism | Nomi",
     "• /genre KOD | Janr 1, Janr 2",
@@ -444,6 +447,7 @@ async function configureBotCommands(): Promise<void> {
     { command: "catalog", description: "Katalogni ko‘rish" },
     { command: "search", description: "Kino nomi bo‘yicha qidirish" },
     { command: "add", description: "Kanal postidan kino qo‘shish" },
+    { command: "addpost", description: "Kinoga qo‘shimcha post qo‘shish" },
     { command: "addseries", description: "Serial yoki ko‘p qismli kino yaratish" },
     { command: "addpart", description: "Serial qismi qo‘shish" },
     { command: "genre", description: "Kino janrini belgilash" },
@@ -761,7 +765,28 @@ async function deliverMovie(
     return;
   }
 
-  await deliverChannelPost(chatId, movie, "Kino");
+  const posts = listMoviePosts(movie.code);
+  const references =
+    posts.length > 0
+      ? posts
+      : [
+          {
+            channelChatId: movie.channelChatId,
+            channelMessageId: movie.channelMessageId,
+          },
+        ];
+
+  for (const post of references) {
+    await deliverChannelPost(
+      chatId,
+      {
+        code: movie.code,
+        channelChatId: post.channelChatId,
+        channelMessageId: post.channelMessageId,
+      },
+      "Kino",
+    );
+  }
 }
 
 async function deliverSeriesEpisode(
@@ -1017,6 +1042,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         "",
         "Endi shu chatga quyidagicha yuboring:",
         "/add KOD | Kino nomi",
+        "/addpost KOD | 2 | Kino fayli",
         "/addpart SERIAL_KOD | FASL | QISM | Qism nomi",
         "yoki /setstart — shu postni start videosi qilish",
         "",
@@ -1050,11 +1076,12 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           "",
           "Admin bo‘limi:",
           "1) Kanal postini botga forward qiling",
-          "2) /add KOD | Kino nomi",
-          "3) /addseries KOD | Serial nomi",
-          "4) Har bir post uchun /addpart KOD | FASL | QISM | Nomi",
-          "5) /setstart — start videosini o‘rnatish",
-          "6) /setstructure POST_LINK — struktura postini sozlash",
+          "2) /add KOD | Kino nomi — 1-post",
+          "3) /addpost KOD | 2 | Kino fayli — qo‘shimcha post",
+          "4) /addseries KOD | Serial nomi",
+          "5) Har bir serial posti uchun /addpart KOD | FASL | QISM | Nomi",
+          "6) /setstart — start videosini o‘rnatish",
+          "7) /setstructure POST_LINK — struktura postini sozlash",
           "/delete KOD",
           "/deleteseries KOD",
           "/list",
@@ -1138,6 +1165,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     if (!userId || !isAdmin(userId)) {
       if (
         command === "/add" ||
+        command === "/addpost" ||
         command === "/addseries" ||
         command === "/addpart" ||
         command === "/genre" ||
@@ -1441,6 +1469,64 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       pendingForwardedPosts.delete(String(userId));
       await refreshStructurePost();
       await sendText(chatId, `${movie.code} — ${movie.title} bazaga saqlandi.`);
+      return;
+    }
+
+    if (command === "/addpost") {
+      const [rawCode, rawPostNumber, rawTitle] = args
+        .split("|")
+        .map((value) => value.trim());
+      const code = normalizeCode(rawCode ?? "");
+      const postNumber = Number(rawPostNumber);
+      const title = rawTitle ?? "";
+      const referencedForward =
+        getForwardedChannelPost(message.reply_to_message ?? message) ??
+        pendingForwardedPosts.get(String(userId));
+
+      if (
+        !code ||
+        !Number.isInteger(postNumber) ||
+        postNumber <= 1 ||
+        !referencedForward
+      ) {
+        await sendText(
+          chatId,
+          [
+            "Format: /addpost KOD | TARTIB | Izoh",
+            "Avval 1-postni /add bilan saqlang.",
+            "Keyin kanal postini forward qilib yuboring.",
+            "Masalan: /addpost 101 | 2 | Kino fayli",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      if (!findMovie(code)) {
+        await sendText(
+          chatId,
+          `${code} kodi topilmadi. Avval poster yoki birinchi postni /add orqali saqlang.`,
+        );
+        return;
+      }
+
+      const post = upsertMoviePost({
+        movieCode: code,
+        postNumber,
+        title,
+        channelChatId: referencedForward.channelChatId,
+        channelMessageId: referencedForward.channelMessageId,
+      });
+      if (!post) {
+        await sendText(chatId, "Kino postini saqlab bo‘lmadi.");
+        return;
+      }
+
+      pendingForwardedPosts.delete(String(userId));
+      await refreshStructurePost();
+      await sendText(
+        chatId,
+        `${code} kodi uchun ${postNumber}-post saqlandi. Kod yuborilganda barcha postlar tartib bilan yuboriladi.`,
+      );
       return;
     }
 

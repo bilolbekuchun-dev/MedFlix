@@ -11,6 +11,16 @@ export type Movie = {
   createdAt: string;
 };
 
+export type MoviePost = {
+  id: number;
+  movieId: number;
+  postNumber: number;
+  title: string;
+  channelChatId: string;
+  channelMessageId: number;
+  createdAt: string;
+};
+
 export type Series = {
   id: number;
   code: string;
@@ -67,6 +77,18 @@ database.exec(`
     FOREIGN KEY (genre_id) REFERENCES genres(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS movie_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    movie_id INTEGER NOT NULL,
+    post_number INTEGER NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    channel_chat_id TEXT NOT NULL,
+    channel_message_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (movie_id, post_number),
+    FOREIGN KEY (movie_id) REFERENCES movies(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS series (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT NOT NULL UNIQUE,
@@ -85,6 +107,19 @@ database.exec(`
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (series_id, season_number, episode_number),
     FOREIGN KEY (series_id) REFERENCES series(id) ON DELETE CASCADE
+  );
+`);
+
+database.exec(`
+  INSERT INTO movie_posts
+    (movie_id, post_number, title, channel_chat_id, channel_message_id, created_at)
+  SELECT movies.id, 1, movies.title, movies.channel_chat_id,
+         movies.channel_message_id, movies.created_at
+  FROM movies
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM movie_posts
+    WHERE movie_posts.movie_id = movies.id AND movie_posts.post_number = 1
   );
 `);
 
@@ -156,6 +191,18 @@ function mapSeriesEpisode(row: Record<string, unknown>): SeriesEpisode {
   };
 }
 
+function mapMoviePost(row: Record<string, unknown>): MoviePost {
+  return {
+    id: Number(row.id),
+    movieId: Number(row.movie_id),
+    postNumber: Number(row.post_number),
+    title: String(row.title ?? ""),
+    channelChatId: String(row.channel_chat_id),
+    channelMessageId: Number(row.channel_message_id),
+    createdAt: String(row.created_at),
+  };
+}
+
 export function findMovie(code: string): Movie | null {
   const row = database
     .prepare(
@@ -196,6 +243,22 @@ export function searchMovies(query: string): Movie[] {
     .all(pattern, pattern, normalizedQuery) as Record<string, unknown>[];
 
   return rows.map(mapMovie);
+}
+
+export function listMoviePosts(movieCode: string): MoviePost[] {
+  const rows = database
+    .prepare(
+      `SELECT movie_posts.id, movie_posts.movie_id, movie_posts.post_number,
+              movie_posts.title, movie_posts.channel_chat_id,
+              movie_posts.channel_message_id, movie_posts.created_at
+       FROM movie_posts
+       INNER JOIN movies ON movies.id = movie_posts.movie_id
+       WHERE movies.code = ?
+       ORDER BY movie_posts.post_number`,
+    )
+    .all(movieCode) as Record<string, unknown>[];
+
+  return rows.map(mapMoviePost);
 }
 
 export function findSeries(code: string): Series | null {
@@ -479,7 +542,62 @@ export function upsertMovie(input: {
       input.channelMessageId,
     );
 
-  return findMovie(input.code) as Movie;
+  const movie = findMovie(input.code) as Movie;
+  database
+    .prepare(
+      `INSERT INTO movie_posts
+         (movie_id, post_number, title, channel_chat_id, channel_message_id)
+       VALUES (?, 1, ?, ?, ?)
+       ON CONFLICT(movie_id, post_number) DO UPDATE SET
+         title = excluded.title,
+         channel_chat_id = excluded.channel_chat_id,
+         channel_message_id = excluded.channel_message_id`,
+    )
+    .run(
+      movie.id,
+      input.title,
+      input.channelChatId,
+      input.channelMessageId,
+    );
+
+  return movie;
+}
+
+export function upsertMoviePost(input: {
+  movieCode: string;
+  postNumber: number;
+  title: string;
+  channelChatId: string;
+  channelMessageId: number;
+}): MoviePost | null {
+  const movie = findMovie(input.movieCode);
+  if (!movie) {
+    return null;
+  }
+
+  database
+    .prepare(
+      `INSERT INTO movie_posts
+         (movie_id, post_number, title, channel_chat_id, channel_message_id)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(movie_id, post_number) DO UPDATE SET
+         title = excluded.title,
+         channel_chat_id = excluded.channel_chat_id,
+         channel_message_id = excluded.channel_message_id`,
+    )
+    .run(
+      movie.id,
+      input.postNumber,
+      input.title,
+      input.channelChatId,
+      input.channelMessageId,
+    );
+
+  return (
+    listMoviePosts(input.movieCode).find(
+      (post) => post.postNumber === input.postNumber,
+    ) ?? null
+  );
 }
 
 export function deleteMovie(code: string): boolean {

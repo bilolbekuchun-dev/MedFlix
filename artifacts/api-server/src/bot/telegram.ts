@@ -1,6 +1,7 @@
 import {
   deleteMovie,
   deleteSeries,
+  deleteSeriesEpisode,
   findMovie,
   listMoviePosts,
   findSeries,
@@ -194,10 +195,11 @@ const defaultStructurePost: TelegramPostReference = {
   messageId: 6,
 };
 
-const defaultContentsPost: TelegramPostReference = {
-  chatId: "@MF_Base",
-  messageId: 22,
-};
+const defaultContentsPosts: TelegramPostReference[] = [22, 23, 24, 25, 26].map(
+  (messageId) => ({ chatId: "@MF_Base", messageId }),
+);
+
+const contentsCache = new Map<string, string>();
 
 function parseTelegramPostLink(value: string): TelegramPostReference | null {
   try {
@@ -248,15 +250,29 @@ function getStructurePostReference(): TelegramPostReference {
   return defaultStructurePost;
 }
 
-function getContentsPostReference(): TelegramPostReference {
-  const chatId = getSetting("contents_post_chat_id");
-  const messageId = Number(getSetting("contents_post_message_id"));
-
-  if (chatId && Number.isInteger(messageId) && messageId > 0) {
-    return { chatId, messageId };
+function getContentsPostReferences(): TelegramPostReference[] {
+  try {
+    const raw = getSetting("contents_posts");
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        const refs = parsed.filter(
+          (item): item is TelegramPostReference =>
+            typeof item === "object" &&
+            item !== null &&
+            typeof (item as TelegramPostReference).chatId === "string" &&
+            Number.isInteger((item as TelegramPostReference).messageId),
+        );
+        if (refs.length > 0) {
+          return refs;
+        }
+      }
+    }
+  } catch {
+    // buzilgan sozlama bo'lsa, standart ro'yxat ishlatiladi
   }
 
-  return defaultContentsPost;
+  return defaultContentsPosts;
 }
 
 function formatTelegramPostLink(reference: TelegramPostReference): string {
@@ -280,7 +296,18 @@ function formatStructurePost(): string {
       getSetting("start_channel_message_id"),
   );
   const requiredSubscriptions = getRequiredSubscriptions();
-  const contentsLink = formatTelegramPostLink(getContentsPostReference());
+  const contentsRefs = getContentsPostReferences();
+  const usedPages = Math.max(
+    1,
+    Math.min(buildContentsPages().length, contentsRefs.length),
+  );
+  const contentsLines = contentsRefs
+    .slice(0, usedPages)
+    .map((ref, index) =>
+      usedPages > 1
+        ? `• ${index + 1}-qism: ${formatTelegramPostLink(ref)}`
+        : `• ${formatTelegramPostLink(ref)}`,
+    );
 
   return [
     "🩺 MEDFLIX BOT — TIZIM MA’LUMOTI",
@@ -291,7 +318,7 @@ function formatStructurePost(): string {
     `• Janrlar: ${genres.length} ta`,
     "",
     "📚 MUNDARIJA (barcha kodlar)",
-    `• ${contentsLink}`,
+    ...contentsLines,
     "",
     "🔌 API VA ISHLASH STRUKTURASI",
     "• Telegram Bot API + long polling",
@@ -339,116 +366,164 @@ function buildBotLink(code: string): string | null {
   return `https://t.me/${botUsername}?start=${code}`;
 }
 
-function formatContentsPost(): string {
+function buildContentsPages(): string[] {
   const byCode = (a: { code: string }, b: { code: string }) =>
     a.code.localeCompare(b.code, undefined, { numeric: true });
   const movies = [...listMovies()].sort(byCode);
   const series = [...listSeries()].sort(byCode);
-  const maxVisible = 3900;
-  const maxLinks = 90;
 
-  let visible = 0;
-  let links = 0;
-  let skipped = 0;
-  const out: string[] = [];
-
-  const push = (html: string, plain: string) => {
-    out.push(html);
-    visible += plain.length + 1;
-  };
-
-  type Entry = { code: string; title: string; suffix: string };
-  const addSection = (heading: string, items: Entry[]) => {
-    if (items.length === 0) {
-      return;
-    }
-    push(heading, heading);
-    for (const item of items) {
-      const plain = `${item.code} — ${item.title}${item.suffix}`;
-      if (visible + plain.length + 1 > maxVisible) {
-        skipped += 1;
-        continue;
-      }
-      const link = links < maxLinks ? buildBotLink(item.code) : null;
-      if (link) {
-        links += 1;
-      }
-      const titleHtml = link
-        ? `<a href="${link}">${escapeHtml(item.title)}</a>`
-        : escapeHtml(item.title);
-      push(
-        `${escapeHtml(item.code)} — ${titleHtml}${escapeHtml(item.suffix)}`,
-        plain,
-      );
-    }
-    push("", "");
-  };
-
-  const title = "📚 MEDFLIX — MUNDARIJA";
-  push(title, title);
-  push("", "");
-  addSection(
-    "🎬 KINOLAR",
-    movies.map((movie) => ({ code: movie.code, title: movie.title, suffix: "" })),
-  );
-  addSection(
-    "📺 SERIALLAR",
-    series.map((item) => ({
+  type Entry = { section: string; code: string; title: string; suffix: string };
+  const entries: Entry[] = [
+    ...movies.map((movie) => ({
+      section: "🎬 KINOLAR",
+      code: movie.code,
+      title: movie.title,
+      suffix: "",
+    })),
+    ...series.map((item) => ({
+      section: "📺 SERIALLAR",
       code: item.code,
       title: item.title,
       suffix: ` (${item.episodeCount} qism)`,
     })),
-  );
+  ];
 
-  if (movies.length === 0 && series.length === 0) {
-    const empty = "Hali kino qo‘shilmagan.";
-    push(empty, empty);
-  }
-  if (skipped > 0) {
-    const more = `… va yana ${skipped} ta (joy yetmadi)`;
-    push(escapeHtml(more), more);
-  }
-  const footer = "🔎 Kino nomini bosing yoki kodni botga yuboring.";
-  push(footer, footer);
+  const maxVisible = 3700;
+  const maxLinks = 90;
+  const pages: string[][] = [];
+  let body: string[] = [];
+  let visible = 0;
+  let links = 0;
+  let section = "";
+  let lastSection = "";
 
-  return out.join("\n");
+  const closePage = () => {
+    if (body.length > 0) {
+      pages.push(body);
+    }
+    body = [];
+    visible = 0;
+    links = 0;
+    section = "";
+  };
+
+  for (const entry of entries) {
+    const plain = `${entry.code} — ${entry.title}${entry.suffix}`;
+    const headingCost = entry.section !== section ? entry.section.length + 20 : 0;
+    if (visible + headingCost + plain.length + 1 > maxVisible || links >= maxLinks) {
+      closePage();
+    }
+
+    if (entry.section !== section) {
+      if (body.length > 0) {
+        body.push("");
+        visible += 1;
+      }
+      const heading =
+        entry.section === lastSection && body.length === 0
+          ? `${entry.section} (davomi)`
+          : entry.section;
+      body.push(heading);
+      visible += heading.length + 1;
+      section = entry.section;
+      lastSection = entry.section;
+    }
+
+    const link = buildBotLink(entry.code);
+    if (link) {
+      links += 1;
+    }
+    const titleHtml = link
+      ? `<a href="${link}">${escapeHtml(entry.title)}</a>`
+      : escapeHtml(entry.title);
+    body.push(
+      `${escapeHtml(entry.code)} — ${titleHtml}${escapeHtml(entry.suffix)}`,
+    );
+    visible += plain.length + 1;
+  }
+  closePage();
+
+  if (pages.length === 0) {
+    pages.push(["Hali kino qo‘shilmagan."]);
+  }
+
+  return pages.map((lines, index) => {
+    const counter = pages.length > 1 ? ` (${index + 1}/${pages.length})` : "";
+    return [
+      `📚 MEDFLIX — MUNDARIJA${counter}`,
+      "",
+      ...lines,
+      "",
+      "🔎 Kino nomini bosing yoki kodni botga yuboring.",
+    ].join("\n");
+  });
 }
 
 async function refreshContentsPost(): Promise<boolean> {
-  const reference = getContentsPostReference();
+  const refs = getContentsPostReferences();
   const structure = getStructurePostReference();
-  if (
-    reference.chatId === structure.chatId &&
-    reference.messageId === structure.messageId
-  ) {
-    return false;
+  const pages = buildContentsPages();
+  const dropped = Math.max(0, pages.length - refs.length);
+  let allOk = true;
+
+  if (dropped > 0) {
+    logger.warn(
+      { pages: pages.length, posts: refs.length },
+      "Contents do not fit into the configured posts",
+    );
   }
 
-  try {
-    await telegramApi("editMessageText", {
-      chat_id: reference.chatId,
-      message_id: reference.messageId,
-      text: formatContentsPost(),
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-    });
-    logger.info(
-      { chatId: reference.chatId, messageId: reference.messageId },
-      "Contents post updated",
-    );
-    return true;
-  } catch (err: unknown) {
-    const errorText = err instanceof Error ? err.message : String(err);
-    if (errorText.includes("message is not modified")) {
-      return true;
+  for (let index = 0; index < refs.length; index += 1) {
+    const reference = refs[index];
+    if (
+      reference.chatId === structure.chatId &&
+      reference.messageId === structure.messageId
+    ) {
+      continue;
     }
 
-    logger.warn(
-      { err, chatId: reference.chatId, messageId: reference.messageId },
-      "Failed to update contents post",
-    );
-    return false;
+    let text =
+      index < pages.length
+        ? pages[index]
+        : `📚 MEDFLIX — MUNDARIJA (${index + 1}/${refs.length})\n\nBu post hozircha bo‘sh. Mundarija davomi shu yerga yoziladi.`;
+    if (dropped > 0 && index === refs.length - 1) {
+      text += `\n\n⚠️ Joy yetmadi: yana ${dropped} sahifa yozilmadi. /setcontents bilan qo‘shimcha post qo‘shing.`;
+    }
+
+    const key = `${reference.chatId}/${reference.messageId}`;
+    if (contentsCache.get(key) === text) {
+      continue;
+    }
+
+    try {
+      await telegramApi("editMessageText", {
+        chat_id: reference.chatId,
+        message_id: reference.messageId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      });
+      contentsCache.set(key, text);
+      logger.info(
+        { chatId: reference.chatId, messageId: reference.messageId },
+        "Contents post updated",
+      );
+    } catch (err: unknown) {
+      const errorText = err instanceof Error ? err.message : String(err);
+      if (errorText.includes("message is not modified")) {
+        contentsCache.set(key, text);
+        continue;
+      }
+
+      allOk = false;
+      logger.warn(
+        { err, chatId: reference.chatId, messageId: reference.messageId },
+        "Failed to update contents post",
+      );
+    }
   }
+
+  return allOk;
 }
 
 async function refreshStructurePost(): Promise<boolean> {
@@ -604,6 +679,7 @@ async function configureBotCommands(): Promise<void> {
     { command: "setcontents", description: "Mundarija postini sozlash" },
     { command: "delete", description: "Kino kodini o‘chirish" },
     { command: "deleteseries", description: "Serialni o‘chirish" },
+    { command: "deletepart", description: "Serial qismini o‘chirish" },
     { command: "list", description: "Kinolar ro‘yxati" },
   ];
 
@@ -1337,6 +1413,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         command === "/setcontents" ||
         command === "/delete" ||
         command === "/deleteseries" ||
+        command === "/deletepart" ||
         command === "/list"
       ) {
         await sendText(
@@ -1408,31 +1485,39 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     }
 
     if (command === "/setcontents") {
-      const reference = parseTelegramPostLink(args);
-      if (!reference) {
-        const currentReference = getContentsPostReference();
+      const tokens = args.split(/[\s,]+/).filter(Boolean);
+      const references = tokens.map((token) => parseTelegramPostLink(token));
+      const valid =
+        tokens.length > 0 && references.every((reference) => reference !== null);
+
+      if (!valid) {
         await sendText(
           chatId,
           [
-            "Format: /setcontents POST_LINK",
-            `Joriy mundarija posti: ${formatTelegramPostLink(currentReference)}`,
-            "Masalan: /setcontents https://t.me/MF_Base/22",
+            "Format: /setcontents LINK1 LINK2 LINK3 ...",
+            "Joriy mundarija postlari:",
+            ...getContentsPostReferences().map(
+              (reference, index) =>
+                `${index + 1}. ${formatTelegramPostLink(reference)}`,
+            ),
             "",
+            "Masalan: /setcontents https://t.me/MF_Base/22 https://t.me/MF_Base/23",
             "Bot target kanalda postlarni tahrirlash huquqiga ega bo‘lishi kerak.",
           ].join("\n"),
         );
         return;
       }
 
-      setSetting("contents_post_chat_id", reference.chatId);
-      setSetting("contents_post_message_id", String(reference.messageId));
+      const list = references as TelegramPostReference[];
+      setSetting("contents_posts", JSON.stringify(list));
+      contentsCache.clear();
       await updateStructurePost();
       const updated = await refreshContentsPost();
       await sendText(
         chatId,
         updated
-          ? `Mundarija posti sozlandi va yangilandi: ${formatTelegramPostLink(reference)}`
-          : "Post manzili saqlandi, lekin hozircha tahrirlab bo‘lmadi. Botning kanal huquqlarini tekshiring.",
+          ? `Mundarija postlari sozlandi (${list.length} ta) va yangilandi.`
+          : "Postlar manzili saqlandi, lekin ba‘zilarini tahrirlab bo‘lmadi. Botning kanal huquqlarini tekshiring.",
       );
       return;
     }
@@ -1594,6 +1679,44 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         deleted
           ? `${code} kodi o‘chirildi.`
           : `${code} kodi topilmadi.`,
+      );
+      return;
+    }
+
+    if (command === "/deletepart") {
+      const [rawCode, rawSeason, rawEpisode] = args
+        .split("|")
+        .map((value) => value.trim());
+      const code = normalizeCode(rawCode ?? "");
+      const seasonNumber = Number(rawSeason);
+      const episodeNumber = Number(rawEpisode);
+
+      if (
+        !code ||
+        !Number.isInteger(seasonNumber) ||
+        seasonNumber <= 0 ||
+        !Number.isInteger(episodeNumber) ||
+        episodeNumber <= 0
+      ) {
+        await sendText(
+          chatId,
+          [
+            "Format: /deletepart SERIAL_KOD | FASL | QISM",
+            "Masalan: /deletepart DH | 1 | 3",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      const deleted = deleteSeriesEpisode(code, seasonNumber, episodeNumber);
+      if (deleted) {
+        await refreshStructurePost();
+      }
+      await sendText(
+        chatId,
+        deleted
+          ? `${code} seriali ${seasonNumber}-fasl ${episodeNumber}-qismi o‘chirildi.`
+          : `${code} seriali ${seasonNumber}-fasl ${episodeNumber}-qismi topilmadi.`,
       );
       return;
     }

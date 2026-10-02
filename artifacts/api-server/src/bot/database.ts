@@ -441,6 +441,22 @@ export function deleteSeries(code: string): boolean {
   return result.changes > 0;
 }
 
+export function deleteSeriesEpisode(
+  seriesCode: string,
+  seasonNumber: number,
+  episodeNumber: number,
+): boolean {
+  const result = database
+    .prepare(
+      `DELETE FROM series_episodes
+       WHERE series_id = (SELECT id FROM series WHERE code = ?)
+         AND season_number = ?
+         AND episode_number = ?`,
+    )
+    .run(seriesCode, seasonNumber, episodeNumber);
+  return result.changes > 0;
+}
+
 export function listGenres(): Array<{ name: string; movieCount: number }> {
   const rows = database
     .prepare(

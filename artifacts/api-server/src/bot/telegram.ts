@@ -191,12 +191,12 @@ type TelegramPostReference = {
 };
 
 const defaultStructurePost: TelegramPostReference = {
-  chatId: "@MF_Base",
-  messageId: 6,
+  chatId: "-1004418309907",
+  messageId: 17,
 };
 
 const defaultContentsPosts: TelegramPostReference[] = [22, 23, 24, 25, 26].map(
-  (messageId) => ({ chatId: "@MF_Base", messageId }),
+  (messageId) => ({ chatId: "-1004418309907", messageId }),
 );
 
 const contentsCache = new Map<string, string>();
@@ -1464,7 +1464,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           [
             "Format: /setstructure POST_LINK",
             `Joriy struktura posti: ${formatTelegramPostLink(currentReference)}`,
-            "Masalan: /setstructure https://t.me/MF_Base/17",
+            "Masalan: /setstructure https://t.me/c/4418309907/17",
             "",
             "Bot target kanalda postlarni tahrirlash huquqiga ega bo‘lishi kerak.",
           ].join("\n"),
@@ -1501,7 +1501,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
                 `${index + 1}. ${formatTelegramPostLink(reference)}`,
             ),
             "",
-            "Masalan: /setcontents https://t.me/MF_Base/22 https://t.me/MF_Base/23",
+            "Masalan: /setcontents https://t.me/c/4418309907/22 https://t.me/c/4418309907/23",
             "Bot target kanalda postlarni tahrirlash huquqiga ega bo‘lishi kerak.",
           ].join("\n"),
         );

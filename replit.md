@@ -14,7 +14,7 @@ Telegram bot that stores movie codes in SQLite and copies the matching movie pos
 - Optional env: `TELEGRAM_REQUIRED_CHANNEL_IDS` and `TELEGRAM_REQUIRED_CHAT_IDS` — comma-separated channel/chat IDs for subscription checks
 - Optional env: `TELEGRAM_REQUIRED_CHANNEL_URLS` and `TELEGRAM_REQUIRED_CHAT_URLS` — matching comma-separated invite/public links for the subscription buttons
 - Optional env: `TELEGRAM_DISCUSSION_URL` — discussion link shown below delivered movies
-- Structure post: `https://t.me/MF_Base/6` is the default live system-information post; admins can change it with `/setstructure POST_LINK`
+- MF_Base is private (chat ID `-1004418309907`). The system-information post is message 17; contents pages are messages 22–26. Admins can change them with `/setstructure POST_LINK` and `/setcontents POST_LINK...`.
 
 ## Stack
 

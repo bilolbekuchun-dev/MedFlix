@@ -1,1 +1,2 @@
 - [Telegram bot runtime](telegram-bot-runtime.md) — long polling with Node’s built-in SQLite and Telegram copyMessage delivery
+- [Private MF_Base channel](private-channel-posts.md) — use its numeric Telegram ID for bot-side references, not the former public username

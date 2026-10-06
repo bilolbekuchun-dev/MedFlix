@@ -3,6 +3,8 @@ import {
   deleteSeries,
   deleteSeriesEpisode,
   findMovie,
+  getLastDeliveredEpisodeMessage,
+  setLastDeliveredEpisodeMessage,
   listMoviePosts,
   findSeries,
   findSeriesEpisode,
@@ -779,10 +781,10 @@ async function deliverChannelPost(
     channelMessageId: number;
   },
   kind: "Kino" | "Qism",
-): Promise<void> {
+): Promise<number | null> {
   try {
     const discussionUrl = getDiscussionUrl();
-    await telegramApi("copyMessage", {
+    const result = await telegramApi<{ message_id: number }>("copyMessage", {
       chat_id: chatId,
       from_chat_id: reference.channelChatId,
       message_id: reference.channelMessageId,
@@ -796,6 +798,7 @@ async function deliverChannelPost(
           }
         : {}),
     });
+    return result.message_id;
   } catch (err: unknown) {
     const errorText = err instanceof Error ? err.message : String(err);
     logger.error(
@@ -825,6 +828,7 @@ async function deliverChannelPost(
     }
 
     await sendText(chatId, userMessage);
+    return null;
   }
 }
 
@@ -873,7 +877,9 @@ async function deliverSeriesEpisode(
     return;
   }
 
-  await deliverChannelPost(
+  const previousMessageId = getLastDeliveredEpisodeMessage(chatId, seriesCode);
+
+  const deliveredMessageId = await deliverChannelPost(
     chatId,
     {
       code: `${seriesCode}-${episodeNumber}`,
@@ -882,6 +888,26 @@ async function deliverSeriesEpisode(
     },
     "Qism",
   );
+
+  if (deliveredMessageId === null) {
+    return;
+  }
+
+  setLastDeliveredEpisodeMessage(chatId, seriesCode, deliveredMessageId);
+
+  if (previousMessageId !== null && previousMessageId !== deliveredMessageId) {
+    try {
+      await telegramApi("deleteMessage", {
+        chat_id: chatId,
+        message_id: previousMessageId,
+      });
+    } catch (err: unknown) {
+      logger.warn(
+        { err, chatId, seriesCode, previousMessageId },
+        "Failed to auto-delete previous episode message",
+      );
+    }
+  }
 }
 
 function getStartVideoReference(): {

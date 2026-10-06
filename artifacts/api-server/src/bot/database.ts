@@ -108,6 +108,15 @@ database.exec(`
     UNIQUE (series_id, season_number, episode_number),
     FOREIGN KEY (series_id) REFERENCES series(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS series_last_delivery (
+    chat_id INTEGER NOT NULL,
+    series_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (chat_id, series_id),
+    FOREIGN KEY (series_id) REFERENCES series(id) ON DELETE CASCADE
+  );
 `);
 
 database.exec(`
@@ -455,6 +464,45 @@ export function deleteSeriesEpisode(
     )
     .run(seriesCode, seasonNumber, episodeNumber);
   return result.changes > 0;
+}
+
+export function getLastDeliveredEpisodeMessage(
+  chatId: number,
+  seriesCode: string,
+): number | null {
+  const row = database
+    .prepare(
+      `SELECT series_last_delivery.message_id
+       FROM series_last_delivery
+       INNER JOIN series ON series.id = series_last_delivery.series_id
+       WHERE series_last_delivery.chat_id = ? AND series.code = ?`,
+    )
+    .get(chatId, seriesCode) as Record<string, unknown> | undefined;
+
+  return row ? Number(row.message_id) : null;
+}
+
+export function setLastDeliveredEpisodeMessage(
+  chatId: number,
+  seriesCode: string,
+  messageId: number,
+): void {
+  const series = database
+    .prepare("SELECT id FROM series WHERE code = ?")
+    .get(seriesCode) as Record<string, unknown> | undefined;
+  if (!series) {
+    return;
+  }
+
+  database
+    .prepare(
+      `INSERT INTO series_last_delivery (chat_id, series_id, message_id)
+       VALUES (?, ?, ?)
+       ON CONFLICT(chat_id, series_id) DO UPDATE SET
+         message_id = excluded.message_id,
+         updated_at = CURRENT_TIMESTAMP`,
+    )
+    .run(chatId, Number(series.id), messageId);
 }
 
 export function listGenres(): Array<{ name: string; movieCount: number }> {

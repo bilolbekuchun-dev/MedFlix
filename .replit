@@ -2,7 +2,9 @@ modules = ["nodejs-24"]
 
 [deployment]
 router = "application"
-deploymentTarget = "autoscale"
+deploymentTarget = "vm"
+build = ["sh", "-c", "corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build"]
+run = ["sh", "-c", "node --enable-source-maps artifacts/api-server/dist/index.mjs"]
 
 [deployment.postBuild]
 args = ["pnpm", "store", "prune"]
